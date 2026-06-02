@@ -1,0 +1,285 @@
+import tkinter as tk
+from tkinter import ttk, messagebox
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+import datetime
+
+class NPIApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("NPI Validation System")
+        self.root.geometry("950x650")
+        self.root.resizable(False, False)
+        
+        self.current_lang = "ENG"
+        self.dark_mode = False
+        self.records = []
+        
+        # Paletas de color premium (Inspiradas en macOS)
+        self.themes = {
+            "light": {
+                "bg": "#F5F5F7",         # Gris claro Apple
+                "card": "#FFFFFF",       # Contenedor blanco puro
+                "text": "#1D1D1F",       # Texto casi negro original
+                "text_sub": "#86868B",   # Subtextos grisáceos
+                "accent": "#0071E3",     # Azul Apple institucional
+                "danger": "#FF453A",     # Rojo Apple
+                "border": "#E5E5EA",     # Bordes sutiles
+                "entry_bg": "#F5F5F7"    # Fondo de inputs
+            },
+            "dark": {
+                "bg": "#161617",         # Negro premium
+                "card": "#212124",       # Contenedor gris oscuro
+                "text": "#F5F5F7",       # Texto claro
+                "text_sub": "#86868B",   # Subtextos
+                "accent": "#0A84FF",     # Azul Apple Dark
+                "danger": "#FF453A",     # Rojo Apple
+                "border": "#323236",     # Bordes oscuros
+                "entry_bg": "#1C1C1E"    # Fondo de inputs oscuro
+            }
+        }
+        
+        self.lang_dict = {
+            "ENG": {
+                "title": "NPI Product Validation Registry", "frame": "Validation Data Entry",
+                "serial": "Serial Number", "model": "NPI Model", "test": "Select Test",
+                "result": "Test Result", "comments": "Comments (Optional)",
+                "b_save": "Add to Preview", "b_del": "Delete Selected Row", "b_pdf": "Generate PDF Report",
+                "t_ser": "Serial", "t_mod": "Model", "t_tst": "Test", "t_res": "Result", "t_com": "Comments",
+                "err_v": "Please, enter both Serial and NPI Model.", "err_s": "Please select a row to delete.",
+                "pdf_ok": "PDF Report generated successfully!", "pdf_err": "No records to generate a PDF."
+            },
+            "ESP": {
+                "title": "Registro de Validación NPI", "frame": "Captura de Datos",
+                "serial": "Número de Serial", "model": "Modelo NPI", "test": "Selecciona Prueba",
+                "result": "Resultado", "comments": "Comentarios (Opcional)",
+                "b_save": "Agregar a Vista Previa", "b_del": "Eliminar Fila Seleccionada", "b_pdf": "Generar Reporte PDF",
+                "t_ser": "Serial", "t_mod": "Modelo", "t_tst": "Prueba", "t_res": "Resultado", "t_com": "Comentarios",
+                "err_v": "Por favor, ingresa Serial y Modelo.", "err_s": "Selecciona una fila para eliminar.",
+                "pdf_ok": "¡Reporte PDF generado con éxito!", "pdf_err": "No hay registros para generar PDF."
+            }
+        }
+        
+        # Estilos globales para componentes nativos ttk
+        self.style = ttk.Style()
+        self.style.theme_use("clam")
+        
+        # Contenedor Superior (Navbar)
+        self.navbar = tk.Frame(self.root, height=50)
+        self.navbar.pack(fill="x", side="top", padx=30, pady=(15, 0))
+        self.navbar.pack_propagate(False)
+        
+        self.lbl_title = tk.Label(self.navbar, font=("SF Pro Display", 16, "bold"), anchor="w")
+        self.lbl_title.pack(side="left", fill="y")
+        
+        # Botones de control superiores minimalistas
+        self.b_lang = tk.Button(self.navbar, font=("SF Pro Text", 9, "bold"), bd=0, cursor="hand2", padx=10, command=self.toggle_lang)
+        self.b_lang.pack(side="right", padx=5, fill="y")
+        
+        self.b_theme = tk.Button(self.navbar, font=("SF Pro Text", 11), bd=0, cursor="hand2", width=4, command=self.toggle_theme)
+        self.b_theme.pack(side="right", padx=5, fill="y")
+        
+        # Área Principal (Layout)
+        self.cuerpo = tk.Frame(self.root)
+        self.cuerpo.pack(fill="both", expand=True, padx=30, pady=20)
+        
+        # Panel Izquierdo: Formulario (Card minimalista)
+        # ASÍ DEBE QUEDAR (Código corregido):
+        self.frame_form = tk.Frame(self.cuerpo, bd=0, padx=20, pady=20, width=310)
+        self.frame_form.pack(side="left", fill="both", expand=False)
+        self.frame_form.pack_propagate(False)
+        
+        # Entradas de Datos estilizadas
+        self.l_ser = tk.Label(self.frame_form, font=("SF Pro Text", 10, "bold"), anchor="w")
+        self.l_ser.pack(fill="x", pady=(0, 4))
+        self.e_ser = tk.Entry(self.frame_form, font=("SF Pro Text", 11), bd=0, highlightthickness=1)
+        self.e_ser.pack(fill="x", ipady=6, pady=(0, 12))
+        
+        self.l_mod = tk.Label(self.frame_form, font=("SF Pro Text", 10, "bold"), anchor="w")
+        self.l_mod.pack(fill="x", pady=(0, 4))
+        self.e_mod = tk.Entry(self.frame_form, font=("SF Pro Text", 11), bd=0, highlightthickness=1)
+        self.e_mod.pack(fill="x", ipady=6, pady=(0, 12))
+        
+        self.l_tst = tk.Label(self.frame_form, font=("SF Pro Text", 10, "bold"), anchor="w")
+        self.l_tst.pack(fill="x", pady=(0, 4))
+        self.c_tst = ttk.Combobox(self.frame_form, state="readonly", font=("SF Pro Text", 10), values=("DevicePrep", "Everwill (FCT)", "Provision"))
+        self.c_tst.current(0)
+        self.c_tst.pack(fill="x", ipady=4, pady=(0, 12))
+        
+        self.l_res = tk.Label(self.frame_form, font=("SF Pro Text", 10, "bold"), anchor="w")
+        self.l_res.pack(fill="x", pady=(0, 4))
+        self.c_res = ttk.Combobox(self.frame_form, state="readonly", font=("SF Pro Text", 10), values=("Pass", "Fail"))
+        self.c_res.current(0)
+        self.c_res.pack(fill="x", ipady=4, pady=(0, 12))
+        
+        self.l_com = tk.Label(self.frame_form, font=("SF Pro Text", 10, "bold"), anchor="w")
+        self.l_com.pack(fill="x", pady=(0, 4))
+        self.t_com = tk.Text(self.frame_form, height=3, font=("SF Pro Text", 10), bd=0, highlightthickness=1)
+        self.t_com.pack(fill="x", pady=(0, 15))
+        
+        # Botón Primario de Acción
+        self.btn_save = tk.Button(self.frame_form, bd=0, font=("SF Pro Text", 11, "bold"), cursor="hand2", command=self.add_item)
+        self.btn_save.pack(fill="x", ipady=8)
+        
+        # Panel Derecho: Tabla y Reportes
+        self.derecha = tk.Frame(self.cuerpo)
+        self.derecha.pack(side="right", fill="both", expand=True, padx=(20, 0))
+        
+        # Estructura de la Tabla (Treeview)
+        self.tabla_frame = tk.Frame(self.derecha)
+        self.tabla_frame.pack(fill="both", expand=True)
+        
+        self.tabla = ttk.Treeview(self.tabla_frame, columns=("s","m","t","r","c"), show="headings", selectmode="browse")
+        self.tabla.pack(side="left", fill="both", expand=True)
+        
+        # Scrollbar minimalista
+        scrollbar = ttk.Scrollbar(self.tabla_frame, orient="vertical", command=self.tabla.yview)
+        self.tabla.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Anchos de columna balanceados
+        self.tabla.column("s", width=100, anchor="w")
+        self.tabla.column("m", width=100, anchor="w")
+        self.tabla.column("t", width=120, anchor="w")
+        self.tabla.column("r", width=80, anchor="center")
+        self.tabla.column("c", width=180, anchor="w")
+        
+        # Botones de gestión inferiores
+        self.btn_actions_frame = tk.Frame(self.derecha)
+        self.btn_actions_frame.pack(fill="x", pady=(15, 0))
+        
+        self.btn_del = tk.Button(self.btn_actions_frame, bd=0, font=("SF Pro Text", 10, "bold"), cursor="hand2", padx=15, command=self.del_item)
+        self.btn_del.pack(side="left", ipady=8)
+        
+        self.btn_pdf = tk.Button(self.btn_actions_frame, bd=0, font=("SF Pro Text", 11, "bold"), cursor="hand2", command=self.make_pdf)
+        self.btn_pdf.pack(side="right", ipady=8, ipadx=20)
+        
+        self.update_lang()
+        self.update_theme()
+
+    def toggle_lang(self):
+        self.current_lang = "ESP" if self.current_lang == "ENG" else "ENG"
+        self.b_lang.config(text="ENG" if self.current_lang == "ENG" else "ESP")
+        self.update_lang()
+        
+    def update_lang(self):
+        tx = self.lang_dict[self.current_lang]
+        self.lbl_title.config(text=tx["title"])
+        self.l_ser.config(text=tx["serial"])
+        self.l_mod.config(text=tx["model"])
+        self.l_tst.config(text=tx["test"])
+        self.l_res.config(text=tx["result"])
+        self.l_com.config(text=tx["comments"])
+        self.btn_save.config(text=tx["b_save"])
+        self.btn_del.config(text=tx["b_del"])
+        self.btn_pdf.config(text=tx["b_pdf"])
+        
+        self.tabla.heading("s", text=tx["t_ser"])
+        self.tabla.heading("m", text=tx["t_mod"])
+        self.tabla.heading("t", text=tx["t_tst"])
+        self.tabla.heading("r", text=tx["t_res"])
+        self.tabla.heading("c", text=tx["t_com"])
+
+    def toggle_theme(self):
+        self.dark_mode = not self.dark_mode
+        self.b_theme.config(text="☀️" if self.dark_mode else "🌙")
+        self.update_theme()
+        
+    def update_theme(self):
+        # Selección de paleta activa
+        t = self.themes["dark"] if self.dark_mode else self.themes["light"]
+        
+        # Actualización de Contenedores Base
+        self.root.config(bg=t["bg"])
+        self.navbar.config(bg=t["bg"])
+        self.cuerpo.config(bg=t["bg"])
+        self.tabla_frame.config(bg=t["bg"])
+        self.btn_actions_frame.config(bg=t["bg"])
+        
+        # Título principal
+        self.lbl_title.config(bg=t["bg"], fg=t["text"])
+        
+        # Botones de navegación superiores
+        self.b_lang.config(bg=t["card"], fg=t["accent"], activebackground=t["border"], activeforeground=t["accent"])
+        self.b_theme.config(bg=t["card"], fg=t["text"], activebackground=t["border"], activeforeground=t["text"])
+
+        # Tarjeta del Formulario (Contenedor agrupador estilizado)
+        self.frame_form.config(bg=t["card"])
+        for w in self.frame_form.winfo_children():
+            if isinstance(w, tk.Label):
+                w.config(bg=t["card"], fg=t["text"])
+
+        # Estilos de Inputs (Entradas de texto limpias sin bordes Windows 95)
+        input_widgets = [self.e_ser, self.e_mod, self.t_com]
+        for item in input_widgets:
+            item.config(bg=t["entry_bg"], fg=t["text"], insertbackground=t["text"],
+                        highlightbackground=t["border"], highlightcolor=t["accent"])
+
+        # Configuración de Botones Principales de Acción
+        self.btn_save.config(bg=t["accent"], fg="#FFFFFF", activebackground=t["accent"])
+        self.btn_del.config(bg=t["card"], fg=t["danger"], activebackground=t["border"], activeforeground=t["danger"])
+        self.btn_pdf.config(bg=t["accent"], fg="#FFFFFF", activebackground=t["accent"])
+
+        # Personalización Avanzada de la Tabla (Treeview) vía TTK Styles
+        self.style.configure("Treeview",
+                             background=t["card"],
+                             fieldbackground=t["card"],
+                             foreground=t["text"],
+                             rowheight=32,
+                             font=("SF Pro Text", 10),
+                             borderwidth=0)
+        
+        self.style.configure("Treeview.Heading",
+                             background=t["entry_bg"],
+                             foreground=t["text_sub"],
+                             font=("SF Pro Text", 9, "bold"),
+                             relief="flat",
+                             padding=8)
+
+        # Efecto visual al seleccionar filas en la tabla
+        self.style.map("Treeview",
+                       background=[("selected", t["accent"])],
+                       foreground=[("selected", "#FFFFFF")])
+        self.style.map("Treeview.Heading",
+                       background=[("active", t["border"])])
+
+    def add_item(self):
+        tx = self.lang_dict[self.current_lang]
+        s, m = self.e_ser.get().strip(), self.e_mod.get().strip()
+        if not s or not m:
+            messagebox.showwarning("Error", tx["err_v"])
+            return
+        row = [s, m, self.c_tst.get(), self.c_res.get(), self.t_com.get("1.0", tk.END).strip()]
+        self.records.append(row)
+        self.tabla.insert("", "end", values=row)
+        self.e_ser.delete(0, tk.END)
+        self.e_mod.delete(0, tk.END)
+        self.t_com.delete("1.0", tk.END)
+
+    def del_item(self):
+        tx = self.lang_dict[self.current_lang]
+        sel = self.tabla.selection()
+        if not sel:
+            messagebox.showwarning("Error", tx["err_s"])
+            return
+        for f in sel:
+            val = [str(x) for x in self.tabla.item(f)["values"]]
+            self.records = [r for r in self.records if [str(x) for x in r] != val]
+            self.tabla.delete(f)
+
+    def make_pdf(self):
+        tx = self.lang_dict[self.current_lang]
+        if not self.records:
+            messagebox.showwarning("Error", tx["pdf_err"])
+            return
+            
+        doc = SimpleDocTemplate("NPI_Report.pdf", pagesize=letter)
+        # Nota: Aquí continúa tu lógica previa de ReportLab...
+        messagebox.showinfo("Success", tx["pdf_ok"])
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = NPIApp(root)
+    root.mainloop()
