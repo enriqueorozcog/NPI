@@ -1,0 +1,546 @@
+import tkinter as tk
+from tkinter import ttk, messagebox
+import sqlite3
+import os
+import datetime
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+
+class NPIApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("NPI Validation System")
+        self.root.geometry("950x700")
+        self.root.resizable(False, False)
+        
+        try:
+            self.root.iconbitmap("app_icon.ico")
+        except Exception:
+            pass
+        
+        self.current_lang = "ENG"
+        self.dark_mode = False
+        self.records = []
+        
+        self.init_database()
+        
+        # Paletas de color premium (Inspiradas en macOS)
+        self.themes = {
+            "light": {
+                "bg": "#F5F5F7", "card": "#FFFFFF", "text": "#1D1D1F", 
+                "text_sub": "#86868B", "accent": "#0071E3", "danger": "#FF453A", 
+                "border": "#E5E5EA", "entry_bg": "#F5F5F7"
+            },
+            "dark": {
+                "bg": "#161617", "card": "#212124", "text": "#F5F5F7", 
+                "text_sub": "#86868B", "accent": "#0A84FF", "danger": "#FF453A", 
+                "border": "#323236", "entry_bg": "#1C1C1E"
+            }
+        }
+        
+        self.lang_dict = {
+            "ENG": {
+                "title": "NPI Product Validation Registry", "frame": "Validation Data Entry",
+                "serial": "Serial Number (Alphanumeric)", "model": "NPI Model (Alphanumeric)", "test": "Select Test",
+                "result": "Test Result", "comments": "Comments (Optional)",
+                "b_save": "Add and Save", "b_del": "Delete Selected", "b_clear_db": "Clear Database", "b_pdf": "Generate PDF Report",
+                "b_excel": "Export to Excel", "clear_title": "Clear All Data?",
+                "clear_msg": "Are you sure you want to permanently delete all records?",
+                "t_ser": "Serial", "t_mod": "Model", "t_tst": "Test", "t_res": "Result", "t_com": "Comments",
+                "err_v": "Please, enter both Serial and NPI Model.", "err_s": "Please select a row to delete.",
+                "pdf_ok": "PDF Report generated on your Desktop!", "pdf_err": "No records to generate a PDF.",
+                "excel_ok": "Excel Database exported to your Desktop!", "search_placeholder": "🔍 Search by Serial or Model...",
+                "status_total": "Total Records: {}"
+            },
+            "ESP": {
+                "title": "Registro de Validación NPI", "frame": "Captura de Datos",
+                "serial": "Número de Serial (Alfanumérico)", "model": "Modelo NPI (Alfanumérico)", "test": "Selecciona Prueba",
+                "result": "Resultado", "comments": "Comentarios (Opcional)",
+                "b_save": "Agregar y Guardar", "b_del": "Eliminar Seleccionado", "b_clear_db": "Limpiar Base de Datos", "b_pdf": "Generar Reporte PDF",
+                "b_excel": "Exportar a Excel", "clear_title": "¿Borrar todos los datos?",
+                "clear_msg": "¿Estás seguro de que deseas eliminar permanentemente todos los registros?",
+                "t_ser": "Serial", "t_mod": "Modelo", "t_tst": "Prueba", "t_res": "Resultado", "t_com": "Comentarios",
+                "err_v": "Por favor, ingresa Serial y Modelo.", "err_s": "Selecciona una fila para eliminar.",
+                "pdf_ok": "¡Reporte PDF generado en tu Escritorio!", "pdf_err": "No hay registros para generar PDF.",
+                "excel_ok": "¡Base de datos Excel exportada a tu Escritorio!", "search_placeholder": "🔍 Buscar por Serial o Modelo...",
+                "status_total": "Registros Totales: {}"
+            }
+        }
+        
+        self.style = ttk.Style()
+        self.style.theme_use("clam")
+        
+        self.vcmd = (self.root.register(self.validate_alphanumeric), '%P')
+        
+        # --- MEJORA: NAVBAR SUPERIOR TOTALMENTE CENTRADA ---
+        self.navbar = tk.Frame(self.root, height=50)
+        self.navbar.pack(fill="x", side="top", padx=30, pady=(15, 0))
+        self.navbar.pack_propagate(False)
+        
+        # Contenedor interno expansivo para centrar elementos
+        self.nav_center_frame = tk.Frame(self.navbar)
+        self.nav_center_frame.pack(expand=True, fill="y")
+        
+        self.lbl_title = tk.Label(self.nav_center_frame, font=("Inter", 16, "bold"), anchor="center")
+        self.lbl_title.pack(side="left", fill="y", padx=15)
+        
+        # Botones de control integrados y simétricos
+        self.b_lang = tk.Button(self.nav_center_frame, font=("Inter", 9, "bold"), bd=0, cursor="hand2", padx=12, command=self.toggle_lang)
+        self.b_lang.pack(side="left", padx=5, fill="y", ipady=5)
+        
+        self.b_theme = tk.Button(self.nav_center_frame, font=("Inter", 11), bd=0, cursor="hand2", width=5, command=self.toggle_theme)
+        self.b_theme.pack(side="left", padx=5, fill="y", ipady=5)
+
+                # Área Principal (Layout)
+        self.cuerpo = tk.Frame(self.root)
+        self.cuerpo.pack(fill="both", expand=True, padx=30, pady=20)
+        
+        # Panel Izquierdo: Formulario (Card minimalista)
+        self.frame_form = tk.Frame(self.cuerpo, bd=0, padx=20, pady=20, width=310)
+        self.frame_form.pack(side="left", fill="both", expand=False)
+        self.frame_form.pack_propagate(False)
+        
+        self.l_ser = tk.Label(self.frame_form, font=("Inter", 10, "bold"), anchor="w")
+        self.l_ser.pack(fill="x", pady=(0, 4))
+        self.e_ser = tk.Entry(self.frame_form, font=("Inter", 11), bd=0, highlightthickness=1, validate="key", validatecommand=self.vcmd)
+        self.e_ser.pack(fill="x", ipady=6, pady=(0, 12))
+        
+        self.l_mod = tk.Label(self.frame_form, font=("Inter", 10, "bold"), anchor="w")
+        self.l_mod.pack(fill="x", pady=(0, 4))
+        self.e_mod = tk.Entry(self.frame_form, font=("Inter", 11), bd=0, highlightthickness=1, validate="key", validatecommand=self.vcmd)
+        self.e_mod.pack(fill="x", ipady=6, pady=(0, 12))
+        
+        self.l_tst = tk.Label(self.frame_form, font=("Inter", 10, "bold"), anchor="w")
+        self.l_tst.pack(fill="x", pady=(0, 4))
+        self.c_tst = ttk.Combobox(self.frame_form, state="readonly", font=("Inter", 10), values=("DevicePrep", "Everwill (FCT)", "Provision"))
+        self.c_tst.current(0)
+        self.c_tst.pack(fill="x", ipady=4, pady=(0, 12))
+        
+        self.l_res = tk.Label(self.frame_form, font=("Inter", 10, "bold"), anchor="w")
+        self.l_res.pack(fill="x", pady=(0, 4))
+        self.c_res = ttk.Combobox(self.frame_form, state="readonly", font=("Inter", 10), values=("Pass", "Fail"))
+        self.c_res.current(0)
+        self.c_res.pack(fill="x", ipady=4, pady=(0, 12))
+        
+        self.l_com = tk.Label(self.frame_form, font=("Inter", 10, "bold"), anchor="w")
+        self.l_com.pack(fill="x", pady=(0, 4))
+        self.t_com = tk.Text(self.frame_form, height=3, font=("Inter", 10), bd=0, highlightthickness=1)
+        self.t_com.pack(fill="x", pady=(0, 15))
+        
+        self.btn_save = tk.Button(self.frame_form, bd=0, font=("Inter", 11, "bold"), cursor="hand2", command=self.add_item)
+        self.btn_save.pack(fill="x", ipady=8)
+        
+        # Panel Derecho: Buscador, Tabla y Reportes
+        self.derecha = tk.Frame(self.cuerpo)
+        self.derecha.pack(side="right", fill="both", expand=True, padx=(20, 0))
+        
+        self.search_var = tk.StringVar()
+        self.search_var.trace_add("write", self.filter_data)
+        self.e_search = tk.Entry(self.derecha, textvariable=self.search_var, font=("Inter", 11), bd=0, highlightthickness=1)
+        self.e_search.pack(fill="x", ipady=6, pady=(0, 10))
+        
+        # Estructura de la Tabla (Treeview)
+        self.tabla_frame = tk.Frame(self.derecha)
+        self.tabla_frame.pack(fill="both", expand=True)
+        
+        self.tabla = ttk.Treeview(self.tabla_frame, columns=("id","s","m","t","r","c"), show="headings", selectmode="browse")
+        self.tabla.pack(side="left", fill="both", expand=True)
+        
+        scrollbar = ttk.Scrollbar(self.tabla_frame, orient="vertical", command=self.tabla.yview)
+        self.tabla.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        
+        # MEJORA: Ancho ampliado para Serial (150) y alineación centrada ("center") para todos los valores
+        self.tabla.column("id", width=0, minwidth=0, stretch=False)
+        self.tabla.column("s", width=150, anchor="center")
+        self.tabla.column("m", width=100, anchor="center")
+        self.tabla.column("t", width=120, anchor="center")
+        self.tabla.column("r", width=80, anchor="center")
+        self.tabla.column("c", width=180, anchor="center")
+        
+        # Botones de gestión inferiores
+        self.btn_actions_frame = tk.Frame(self.derecha)
+        self.btn_actions_frame.pack(fill="x", pady=(15, 0))
+        
+        self.btn_del = tk.Button(self.btn_actions_frame, bd=0, font=("Inter", 10, "bold"), cursor="hand2", padx=15, command=self.del_item)
+        self.btn_del.pack(side="left", ipady=8)
+        
+        self.btn_clear_db = tk.Button(self.btn_actions_frame, bd=0, font=("Inter", 10, "bold"), cursor="hand2", padx=15, command=self.clear_entire_database)
+        self.btn_clear_db.pack(side="left", padx=10, ipady=8)
+        
+        self.btn_excel = tk.Button(self.btn_actions_frame, bd=0, font=("Inter", 10, "bold"), cursor="hand2", padx=15, command=self.make_excel)
+        self.btn_excel.pack(side="left", ipady=8)
+        
+        self.btn_pdf = tk.Button(self.btn_actions_frame, bd=0, font=("Inter", 11, "bold"), cursor="hand2", command=self.make_pdf)
+        self.btn_pdf.pack(side="right", ipady=8, ipadx=20)
+        
+        # MEJORA: Contador de registros en la esquina inferior derecha (Barra de estado estilo macOS)
+        self.lbl_status = tk.Label(self.derecha, font=("Inter", 9), anchor="e")
+        self.lbl_status.pack(fill="x", pady=(5, 0))
+        
+        self.load_stored_data()
+        self.update_lang()
+        self.update_theme()
+
+    def validate_alphanumeric(self, current_text):
+        if current_text == "":
+            return True
+        return current_text.isalnum()
+
+    def init_database(self):
+        self.conn = sqlite3.connect("npi_system.db")
+        self.cursor = self.conn.cursor()
+        self.cursor.execute("""
+            CREATE TABLE IF NOT EXISTS validations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                serial TEXT,
+                model TEXT,
+                test TEXT,
+                result TEXT,
+                comments TEXT
+            )
+        """)
+        self.conn.commit()
+
+    def load_stored_data(self):
+        for item in self.tabla.get_children():
+            self.tabla.delete(item)
+        self.records = []
+        
+        self.cursor.execute("SELECT id, serial, model, test, result, comments FROM validations")
+        rows = self.cursor.fetchall()
+        for r in rows:
+            self.tabla.insert("", "end", values=r)
+            self.records.append(list(r[1:]))
+        self.update_status_count()
+
+    def update_status_count(self):
+        """Actualiza el contador dinámico de registros en la UI"""
+        tx = self.lang_dict[self.current_lang]
+        self.lbl_status.config(text=tx["status_total"].format(len(self.records)))
+
+    def clear_entire_database(self):
+        tx = self.lang_dict[self.current_lang]
+        confirmacion = messagebox.askyesno(tx["clear_title"], tx["clear_msg"], icon="warning")
+        if confirmacion:
+            self.cursor.execute("DELETE FROM validations")
+            self.conn.commit()
+            self.load_stored_data()
+
+    def filter_data(self, *args):
+        query = self.search_var.get().strip().lower()
+        tx = self.lang_dict[self.current_lang]
+        if query == tx["search_placeholder"].lower():
+            return
+            
+        for item in self.tabla.get_children():
+            self.tabla.delete(item)
+            
+        if not query:
+            self.load_stored_data()
+            return
+            
+        self.cursor.execute("""
+            SELECT id, serial, model, test, result, comments FROM validations 
+            WHERE LOWER(serial) LIKE ? OR LOWER(model) LIKE ?
+        """, (f'%{query}%', f'%{query}%'))
+        
+        rows = self.cursor.fetchall()
+        self.records = []
+        for r in rows:
+            self.tabla.insert("", "end", values=r)
+            self.records.append(list(r[1:]))
+        self.update_status_count()
+
+    def toggle_lang(self):
+        self.current_lang = "ESP" if self.current_lang == "ENG" else "ENG"
+        self.b_lang.config(text="ENG" if self.current_lang == "ENG" else "ESP")
+        self.update_lang()
+        
+    def update_lang(self):
+        tx = self.lang_dict[self.current_lang]
+        self.lbl_title.config(text=tx["title"])
+        self.l_ser.config(text=tx["serial"])
+        self.l_mod.config(text=tx["model"])
+        self.l_tst.config(text=tx["test"])
+        self.l_res.config(text=tx["result"])
+        self.l_com.config(text=tx["comments"])
+        self.btn_save.config(text=tx["b_save"])
+        self.btn_del.config(text=tx["b_del"])
+        self.btn_clear_db.config(text=tx["b_clear_db"])
+        self.btn_excel.config(text=tx["b_excel"])
+        self.btn_pdf.config(text=tx["b_pdf"])
+        
+        self.tabla.heading("s", text=tx["t_ser"])
+        self.tabla.heading("m", text=tx["t_mod"])
+        self.tabla.heading("t", text=tx["t_tst"])
+        self.tabla.heading("r", text=tx["t_res"])
+        self.tabla.heading("c", text=tx["t_com"])
+        
+        self.update_status_count()
+        
+        if not self.search_var.get():
+            self.e_search.delete(0, tk.END)
+            self.e_search.insert(0, tx["search_placeholder"])
+            self.e_search.config(fg=self.themes["dark" if self.dark_mode else "light"]["text_sub"])
+            
+        self.e_search.bind("<FocusIn>", lambda e: self.clear_placeholder())
+        self.e_search.bind("<FocusOut>", lambda e: self.restore_placeholder())
+
+    def clear_placeholder(self):
+        tx = self.lang_dict[self.current_lang]
+        if self.e_search.get() == tx["search_placeholder"]:
+            self.e_search.delete(0, tk.END)
+            self.e_search.config(fg=self.themes["dark" if self.dark_mode else "light"]["text"])
+
+    def restore_placeholder(self):
+        tx = self.lang_dict[self.current_lang]
+        if not self.e_search.get().strip():
+            self.e_search.insert(0, tx["search_placeholder"])
+            self.e_search.config(fg=self.themes["dark" if self.dark_mode else "light"]["text_sub"])
+    def toggle_theme(self):
+        self.dark_mode = not self.dark_mode
+        self.b_theme.config(text="☀️" if self.dark_mode else "🌙")
+        self.update_theme()
+        
+        tx_p = self.lang_dict[self.current_lang]["search_placeholder"]
+        if self.e_search.get() == tx_p:
+            self.e_search.config(fg=self.themes["dark" if self.dark_mode else "light"]["text_sub"])
+        else:
+            self.e_search.config(fg=self.themes["dark" if self.dark_mode else "light"]["text"])
+        
+    def update_theme(self):
+        t = self.themes["dark"] if self.dark_mode else self.themes["light"]
+        
+        self.root.config(bg=t["bg"])
+        self.navbar.config(bg=t["bg"])
+        self.nav_center_frame.config(bg=t["bg"])
+        self.cuerpo.config(bg=t["bg"])
+        self.tabla_frame.config(bg=t["bg"])
+        self.btn_actions_frame.config(bg=t["bg"])
+        self.derecha.config(bg=t["bg"])
+        
+        
+        self.lbl_title.config(bg=t["bg"], fg=t["text"])
+        self.lbl_status.config(bg=t["bg"], fg=t["text_sub"])
+
+        self.b_lang.config(bg=t["card"], fg=t["accent"], activebackground=t["border"], activeforeground=t["accent"])
+        self.b_theme.config(bg=t["card"], fg=t["text"], activebackground=t["border"], activeforeground=t["text"])
+        
+        self.frame_form.config(bg=t["card"])
+        for w in self.frame_form.winfo_children():
+            if isinstance(w, tk.Label):
+                w.config(bg=t["card"], fg=t["text"])
+                
+        input_widgets = [self.e_ser, self.e_mod, self.t_com, self.e_search]
+        for item in input_widgets:
+            item.config(bg=t["entry_bg"], fg=t["text"], insertbackground=t["text"],
+                        highlightbackground=t["border"], highlightcolor=t["accent"])
+        
+        self.btn_save.config(bg=t["accent"], fg="#FFFFFF", activebackground=t["accent"])
+        self.btn_del.config(bg=t["card"], fg=t["danger"], activebackground=t["border"], activeforeground=t["danger"])
+        self.btn_clear_db.config(bg=t["card"], fg=t["danger"], activebackground=t["border"], activeforeground=t["danger"])
+        self.btn_excel.config(bg=t["card"], fg=t["text"], activebackground=t["border"], activeforeground=t["text"])
+        self.btn_pdf.config(bg=t["accent"], fg="#FFFFFF", activebackground=t["accent"])
+        
+        # Ajuste de cabeceras de tabla centradas mediante TTK Styles
+        self.style.configure("Treeview", background=t["card"], fieldbackground=t["card"], foreground=t["text"], rowheight=32, font=("Inter", 10), borderwidth=0)
+        self.style.configure("Treeview.Heading", background=t["entry_bg"], foreground=t["text_sub"], font=("Inter", 9, "bold"), relief="flat", padding=8, anchor="center")
+        self.style.map("Treeview", background=[("selected", t["accent"])], foreground=[("selected", "#FFFFFF")])
+        self.style.map("Treeview.Heading", background=[("active", t["border"])])
+
+    def add_item(self):
+        tx = self.lang_dict[self.current_lang]
+        s, m = self.e_ser.get().strip(), self.e_mod.get().strip()
+        if not s or not m:
+            messagebox.showwarning("Error", tx["err_v"])
+            return
+            
+        tst = self.c_tst.get()
+        res = self.c_res.get()
+        com = self.t_com.get("1.0", tk.END).strip()
+        
+        self.cursor.execute("""
+            INSERT INTO validations (serial, model, test, result, comments)
+            VALUES (?, ?, ?, ?, ?)
+        """, (s, m, tst, res, com))
+        self.conn.commit()
+        
+        self.load_stored_data()
+        
+        self.e_ser.delete(0, tk.END)
+        self.e_mod.delete(0, tk.END)
+        self.t_com.delete("1.0", tk.END)
+
+    def del_item(self):
+        tx = self.lang_dict[self.current_lang]
+        sel = self.tabla.selection()
+        if not sel:
+            messagebox.showwarning("Error", tx["err_s"])
+            return
+            
+        for f in sel:
+            item_data = self.tabla.item(f)["values"]
+            db_id = item_data
+            self.cursor.execute("DELETE FROM validations WHERE id = ?", (db_id,))
+            self.conn.commit()
+            
+        self.load_stored_data()
+
+    def make_excel(self):
+        """Exporta los datos de SQLite a un reporte CSV compatible con Excel en el Escritorio"""
+        tx = self.lang_dict[self.current_lang]
+        if not self.records:
+            messagebox.showwarning("Error", tx["pdf_err"])
+            return
+        try:
+            import csv
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            nombre_excel = f"NPI_Database_{timestamp}.csv"
+            ruta_escritorio = os.path.join(os.path.expanduser("~"), "Desktop")
+            ruta_completa = os.path.join(ruta_escritorio, nombre_excel)
+            
+            with open(ruta_completa, mode="w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.writer(f)
+                writer.writerow([tx["t_ser"], tx["t_mod"], tx["t_tst"], tx["t_res"], tx["t_com"]])
+                writer.writerows(self.records)
+                
+            messagebox.showinfo("Success", tx["excel_ok"])
+            if os.name == 'nt':
+                os.startfile(ruta_completa)
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not export Excel:\n{str(e)}")
+
+    def make_pdf(self):
+        tx = self.lang_dict[self.current_lang]
+        if not self.records:
+            messagebox.showwarning("Error", tx["pdf_err"])
+            return
+            
+        try:
+            from reportlab.graphics.shapes import Drawing
+            from reportlab.graphics.charts.piecharts import Pie
+            from reportlab.graphics.charts.legends import Legend
+
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            nombre_reporte = f"NPI_Report_{timestamp}.pdf"
+            ruta_escritorio = os.path.join(os.path.expanduser("~"), "Desktop")
+            ruta_completa_pdf = os.path.join(ruta_escritorio, nombre_reporte)
+            
+            doc = SimpleDocTemplate(
+                ruta_completa_pdf, 
+                pagesize=letter,
+                rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40
+            )
+            
+            styles = getSampleStyleSheet()
+            c_text = colors.HexColor("#1D1D1F")
+            c_sub = colors.HexColor("#86868B")
+            c_bg_header = colors.HexColor("#F5F5F7")
+            c_border = colors.HexColor("#E5E5EA")
+            
+            style_title = ParagraphStyle('AppleTitle', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=24, leading=28, textColor=c_text, spaceAfter=4)
+            style_subtitle = ParagraphStyle('AppleSubtitle', parent=styles['Normal'], fontName='Helvetica', fontSize=10, leading=14, textColor=c_sub, spaceAfter=15)
+            style_section = ParagraphStyle('AppleSection', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=14, leading=18, textColor=c_text, spaceBefore=15, spaceAfter=10)
+            style_th = ParagraphStyle('AppleTH', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=10, leading=12, textColor=c_text, alignment=1) # Centrado
+            style_td = ParagraphStyle('AppleTD', parent=styles['Normal'], fontName='Helvetica', fontSize=9, leading=13, textColor=c_text, alignment=1) # Centrado
+            
+            story = []
+            
+            titulo_texto = "NPI Validation Report" if self.current_lang == "ENG" else "Reporte de Validación NPI"
+            story.append(Paragraph(titulo_texto, style_title))
+            
+            fecha_actual = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            sub_texto = f"Generated on: {fecha_actual}  |  System Status: Active" if self.current_lang == "ENG" else f"Generado el: {fecha_actual}  |  Estado del Sistema: Activo"
+            story.append(Paragraph(sub_texto, style_subtitle))
+            story.append(Spacer(1, 10))
+            
+            sec_stats = "Validation Statistics" if self.current_lang == "ENG" else "Estadísticas de Validación"
+            story.append(Paragraph(sec_stats, style_section))
+            
+            passes = sum(1 for row in self.records if row == "Pass")
+            fails = sum(1 for row in self.records if row == "Fail")
+            total = len(self.records)
+            
+            # Gráfico de pastel
+            d = Drawing(160, 140)
+            pc = Pie()
+            pc.x = 20; pc.y = 10; pc.width = 120; pc.height = 120
+            pc.data = [passes, fails]
+            pc.labels = [f'{int((passes/total)*100)}%' if passes > 0 else '', f'{int((fails/total)*100)}%' if fails > 0 else '']
+            pc.sideLabels = False
+            pc.slices.fillColor = colors.HexColor("#34C759")
+            pc.slices.fillColor = colors.HexColor("#FF3B30")
+            pc.slices.strokeColor = colors.white
+            pc.slices.strokeWidth = 1.5
+            d.add(pc)
+            
+            # Leyenda del gráfico
+            d_leg = Drawing(140, 140)
+            leg = Legend()
+            leg.x = 10; leg.y = 90; leg.dx = 10; leg.dy = 10
+            leg.fontName = 'Helvetica'; leg.fontSize = 10; leg.boxAnchor = 'nw'
+            leg.columnMaximum = 2; leg.strokeWidth = 0; leg.strokeColor = colors.transparent
+            leg.colorNamePairs = [(colors.HexColor("#34C759"), f'Pass ({passes})'), (colors.HexColor("#FF3B30"), f'Fail ({fails})')]
+            d_leg.add(leg)
+            
+            # MEJORA: Centrar la gráfica de dona y sus etiquetas usando una tabla contenedora alineada al centro
+            tabla_pdf = Table(tabla_datos, colWidths=[130, 90, 100, 60, 152])
+            tabla_grafico.setStyle(TableStyle([
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ]))
+            
+            story.append(tabla_grafico)
+            story.append(Spacer(1, 15))
+            
+            sec_records = "Detailed Records" if self.current_lang == "ENG" else "Registros Detallados"
+            story.append(Paragraph(sec_records, style_section))
+            
+            headers = [tx["t_ser"], tx["t_mod"], tx["t_tst"], tx["t_res"], tx["t_com"]]
+            tabla_datos = [[Paragraph(h, style_th) for h in headers]]
+            
+            for row in self.records:
+                fila_estilizada = []
+                for cell in row:
+                    if cell in ["Pass", "Fail"]:
+                        color_resultado = colors.HexColor("#34C759") if cell == "Pass" else colors.HexColor("#FF3B30")
+                        style_res = ParagraphStyle('ResStyle', parent=style_td, fontName='Helvetica-Bold', textColor=color_resultado, alignment=1)
+                        fila_estilizada.append(Paragraph(str(cell), style_res))
+                    else:
+                        fila_estilizada.append(Paragraph(str(cell), style_td))
+                tabla_datos.append(fila_estilizada)
+                
+            # MEJORA: Ancho de columna expandido para Serial (130) en el PDF para evitar solapamientos
+            # ASÍ DEBE QUEDAR (Línea corregida):
+            tabla_grafico = Table([[d, d_leg]], colWidths=[160, 140])
+
+            tabla_pdf.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), c_bg_header),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'), # Renglones centrados en el PDF
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('TOPPADDING', (0, 0), (-1, -1), 8),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+                ('LINEBELOW', (0, 0), (-1, 0), 1.5, c_text),
+                ('LINEBELOW', (0, 1), (-1, -1), 0.5, c_border),
+            ]))
+            
+            story.append(tabla_pdf)
+            doc.build(story)
+            
+            if os.name == 'nt':
+                os.startfile(ruta_completa_pdf)
+            else:
+                os.system(f'open "{ruta_completa_pdf}"' if os.uname().sysname == 'Darwin' else f'xdg-open "{ruta_completa_pdf}"')
+                
+            messagebox.showinfo("Success", tx["pdf_ok"])
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not generate PDF:\n{str(e)}")
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = NPIApp(root)
+    root.mainloop()
