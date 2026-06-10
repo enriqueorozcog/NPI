@@ -1,0 +1,573 @@
+import tkinter as tk
+from tkinter import ttk, messagebox
+import sqlite3
+import os
+import re
+import json
+import glob
+import csv
+import datetime
+import getpass
+import threading
+
+# Módulo para calendarios interactivos por mes
+from tkcalendar import DateEntry
+
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate
+from reportlab.platypus import Paragraph, Spacer
+from reportlab.platypus import Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib import colors
+
+import matplotlib
+matplotlib.use("TkAgg")
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
+
+
+class LogParserEngine:
+    """Motor analítico multinivel para parseo de JSON en logs."""
+    @staticmethod
+    def parse_file(file_path):
+        serial, model, test = None, None, None
+        result, dt = "Fail", None
+        
+        ts_re = re.compile(r"^\[(?P<dt>\d{4}-\d{2}-\d{2})T(?P<t>\d{2}:\d{2}:\d{2})")
+        js_re = re.compile(r"-\s+(\{.*ProductName.*SerialNumber.*\})")
+        
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+                f.seek(0)
+                for line in f:
+                    if not dt:
+                        ts_m = ts_re.match(line)
+                        if ts_m:
+                            dt = f"{ts_m.group('dt')} {ts_m.group('t')}"
+                    
+                    if "Starting CrewReprovision..." in line:
+                        test = "Provision"
+                    elif "Starting CrewDevicePrep..." in line:
+                        test = "DevicePrep"
+                    
+                    js_m = js_re.search(line)
+                    if js_m:
+                        try:
+                            d = json.loads(js_m.group(1))
+                            serial = d.get("SerialNumber") or d.get("SystemDutSn")
+                            model = d.get("ProductName") or d.get("Project")
+                        except Exception:
+                            pass
+
+            if "Crew-DevicePrep Success" in content or "Crew-Reprovision Success" in content:
+                result = "Pass"
+            else:
+                result = "Fail"
+                
+        except Exception as e:
+            print(f"Error parseando {file_path}: {e}")
+            
+        return serial, model, test, result, dt
+
+
+class NPIApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("NPI Quality Control Intelligence")
+        self.root.geometry("1040x840")
+        self.root.resizable(False, False)
+        
+        self.current_lang = "ESP"
+        self.dark_mode = True
+        self.records = []
+        self.canvas_plot = None
+        self.log_directory = "C:\\PruebasLogs" # Cambiar a Y:\\logs en la planta
+        self.live_mode = False
+        
+        self.init_database()
+        
+        self.themes = {
+            "dark": {
+                "bg": "#161617", "card": "#212124", "text": "#F5F5F7", 
+                "text_sub": "#86868B", "accent": "#0A84FF", "danger": "#FF453A", 
+                "border": "#323236", "entry_bg": "#1C1C1E",
+                "pass_bg": "#1B3B22", "fail_bg": "#4A1D1A"
+            },
+            "light": {
+                "bg": "#F5F5F7", "card": "#FFFFFF", "text": "#1D1D1F", 
+                "text_sub": "#86868B", "accent": "#0071E3", "danger": "#FF453A", 
+                "border": "#E5E5EA", "entry_bg": "#F5F5F7",
+                "pass_bg": "#E8F5E9", "fail_bg": "#FFEBEE"
+            }
+        }
+        
+        self.lang_dict = {
+            "ENG": {
+                "title": "NPI Automated Quality Intelligence", "frame": "Controls",
+                "start_date": "Start Date", "end_date": "End Date",
+                "b_scan": "⚡ Scan Server Logs", "b_del": "Delete", "b_clear_db": "Reset DB",
+                "b_pdf": "Export PDF", "b_excel": "Export CSV", "b_live": "📡 Live Mode: OFF",
+                "clear_title": "Flush?", "clear_msg": "Delete local records?",
+                "t_ser": "Serial", "t_mod": "Model", "t_tst": "Test Run", "t_res": "Status",
+                "t_dt": "Timestamp", "t_usr": "Operator", "status_total": "Records: {} | Yield: {}%",
+                "search_placeholder": "🔍 Filter by Serial or Model..."
+            },
+            "ESP": {
+                "title": "Inteligencia de Calidad Automatizada NPI", "frame": "Controles",
+                "start_date": "Fecha Inicio", "end_date": "Fecha Fin",
+                "b_scan": "⚡ Escanear Logs de Servidor", "b_del": "Eliminar", "b_clear_db": "Limpiar BD",
+                "b_pdf": "Generar PDF", "b_excel": "Exportar CSV", "b_live": "📡 Modo En Vivo: OFF",
+                "clear_title": "¿Vaciar?", "clear_msg": "¿Eliminar registros locales?",
+                "t_ser": "Serial", "t_mod": "Modelo", "t_tst": "Prueba", "t_res": "Resultado",
+                "t_dt": "Fecha/Hora", "t_usr": "Operador", "status_total": "Registros: {} | Rendimiento Yield: {}%",
+                "search_placeholder": "🔍 Filtrar por Serial o Modelo..."
+            }
+        }
+        
+        self.style = ttk.Style()
+        self.style.theme_use("clam")
+
+
+                # --- NAVBAR SUPERIOR ---
+        self.navbar = tk.Frame(self.root, height=50)
+        self.navbar.pack(fill="x", side="top", padx=30, pady=(15, 0))
+        self.navbar.pack_propagate(False)
+        
+        self.lbl_title = tk.Label(self.navbar, font=("Inter", 15, "bold"), anchor="w")
+        self.lbl_title.pack(side="left", fill="y")
+        
+        self.nav_controls_frame = tk.Frame(self.navbar)
+        self.nav_controls_frame.pack(side="right", fill="y")
+        
+        self.b_lang = tk.Button(self.nav_controls_frame, font=("Inter", 9, "bold"), bd=0, cursor="hand2", padx=12, command=self.toggle_lang)
+        self.b_lang.pack(side="left", padx=5, fill="y", ipady=5)
+        
+        self.b_theme = tk.Button(self.nav_controls_frame, font=("Inter", 11), bd=0, cursor="hand2", width=5, command=self.toggle_theme)
+        self.b_theme.pack(side="left", padx=5, fill="y", ipady=5)
+
+        # --- PANEL IZQUIERDO DE RANGOS ---
+        self.cuerpo = tk.Frame(self.root)
+        self.cuerpo.pack(fill="both", expand=True, padx=30, pady=20)
+        
+        self.frame_form = tk.Frame(self.cuerpo, bd=0, padx=15, pady=15, width=260)
+        self.frame_form.pack(side="left", fill="both", expand=False)
+        self.frame_form.pack_propagate(False)
+        
+        self.l_start = tk.Label(self.frame_form, font=("Inter", 10, "bold"), anchor="w")
+        self.l_start.pack(fill="x", pady=(0, 4))
+        
+        self.e_start = DateEntry(self.frame_form, font=("Inter", 10), date_pattern='yyyy-mm-dd',
+                                 headersbackground='#212124', headersforeground='#F5F5F7',
+                                 selectbackground='#0A84FF', selectforeground='white')
+        self.e_start.pack(fill="x", pady=(0, 15))
+        
+        self.l_end = tk.Label(self.frame_form, font=("Inter", 10, "bold"), anchor="w")
+        self.l_end.pack(fill="x", pady=(0, 4))
+        
+        self.e_end = DateEntry(self.frame_form, font=("Inter", 10), date_pattern='yyyy-mm-dd',
+                               headersbackground='#212124', headersforeground='#F5F5F7',
+                               selectbackground='#0A84FF', selectforeground='white')
+        self.e_end.pack(fill="x", pady=(0, 20))
+        
+        # Enlace de eventos reactivos de fecha
+        self.e_start.bind("<<DateEntrySelected>>", lambda e: self.load_data(self.search_var.get(), self.status_filter.get()))
+        self.e_end.bind("<<DateEntrySelected>>", lambda e: self.load_data(self.search_var.get(), self.status_filter.get()))
+        
+        self.btn_scan = tk.Button(self.frame_form, bd=0, font=("Inter", 10, "bold"), cursor="hand2", command=self.start_async_scan)
+        self.btn_scan.pack(fill="x", ipady=8, pady=(0, 10))
+        
+        self.btn_live = tk.Button(self.frame_form, bd=0, font=("Inter", 10, "bold"), cursor="hand2", command=self.toggle_live_mode)
+        self.btn_live.pack(fill="x", ipady=8, pady=(0, 15))
+        
+        self.progress = ttk.Progressbar(self.frame_form, orient="horizontal", mode="determinate")
+        self.progress.pack(fill="x", pady=(5, 0))
+
+
+                # --- PANEL DERECHO DE REGISTROS ---
+        self.derecha = tk.Frame(self.cuerpo)
+        self.derecha.pack(side="right", fill="both", expand=True, padx=(20, 0))
+        
+        self.filter_frame = tk.Frame(self.derecha)
+        self.filter_frame.pack(fill="x", pady=(0, 10))
+        
+        self.search_var = tk.StringVar()
+        self.search_var.trace_add("write", lambda *args: self.load_data(self.search_var.get(), self.status_filter.get()))
+        
+        self.e_search = tk.Entry(self.filter_frame, textvariable=self.search_var, font=("Inter", 11), bd=0, highlightthickness=1)
+        self.e_search.pack(side="left", fill="x", expand=True, ipady=6, padx=(0, 10))
+        
+        self.status_filter = ttk.Combobox(self.filter_frame, state="readonly", font=("Inter", 10), width=12, values=("All", "Pass", "Fail"))
+        self.status_filter.current(0)
+        self.status_filter.pack(side="right", ipady=5)
+        self.status_filter.bind("<<ComboboxSelected>>", lambda e: self.load_data(self.search_var.get(), self.status_filter.get()))
+        
+        self.table_frame = tk.Frame(self.derecha)
+        self.table_frame.pack(fill="both", expand=True, pady=(0, 10))
+        
+        columns = ("serial", "model", "test", "result", "datetime", "user")
+        self.tree = ttk.Treeview(self.table_frame, columns=columns, show="headings", selectmode="browse")
+        
+        self.vsb = ttk.Scrollbar(self.table_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=self.vsb.set)
+        self.vsb.pack(side="right", fill="y")
+        self.tree.pack(side="left", fill="both", expand=True)
+        
+        self.chart_frame = tk.Frame(self.derecha, height=180)
+        self.chart_frame.pack(fill="x", pady=(5, 10))
+        self.chart_frame.pack_propagate(False)
+        
+        # Inicialización del canvas de Matplotlib una sola vez
+        self.init_static_charts()
+        
+        self.actions_frame = tk.Frame(self.derecha)
+        self.actions_frame.pack(fill="x", side="bottom")
+        
+        self.lbl_status = tk.Label(self.actions_frame, font=("Inter", 10, "bold"))
+        self.lbl_status.pack(side="left")
+        
+        for btn, cmd in [("btn_clear_db", self.clear_database), ("btn_del", self.delete_item), ("btn_excel", self.export_excel), ("btn_pdf", self.export_pdf)]:
+            setattr(self, btn, tk.Button(self.actions_frame, font=("Inter", 9), bd=0, cursor="hand2", command=cmd))
+            getattr(self, btn).pack(side="right", padx=5)
+            
+        self.update_ui_text()
+        self.toggle_theme(init=True)
+        self.load_data()
+        self.run_live_loop()
+
+    def init_database(self):
+        self.conn = sqlite3.connect("npi_automated_quality.db")
+        self.cursor = self.conn.cursor()
+        self.cursor.execute("""
+            CREATE TABLE IF NOT EXISTS server_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                serial TEXT NOT NULL, model TEXT NOT NULL,
+                test TEXT NOT NULL, result TEXT NOT NULL,
+                datetime TEXT NOT NULL, user TEXT NOT NULL,
+                UNIQUE(serial, datetime)
+            )
+        """)
+        self.conn.commit()
+
+    def init_static_charts(self):
+        self.fig = Figure(figsize=(6, 1.8), dpi=100)
+        self.ax = self.fig.add_subplot(111)
+        self.canvas_plot = FigureCanvasTkAgg(self.fig, master=self.chart_frame)
+        self.canvas_plot.get_tk_widget().pack(fill="both", expand=True)
+
+
+    def load_data(self, query="", status="All"):
+        for item in self.tree.get_children(): 
+            self.tree.delete(item)
+            
+        try:
+            start_str = self.e_start.get_date().strftime("%Y-%m-%d")
+            end_str = self.e_end.get_date().strftime("%Y-%m-%d")
+        except Exception:
+            start_str = "2000-01-01"
+            end_str = "2099-12-31"
+
+        sql_query = """
+            SELECT id, serial, model, test, result, datetime, user 
+            FROM server_logs 
+            WHERE date(datetime) >= date(?) AND date(datetime) <= date(?)
+        """
+        params = [start_str, end_str]
+        
+        if query:
+            sql_query += " AND (serial LIKE ? OR model LIKE ?)"
+            sf = f"%{query}%"
+            params.extend([sf, sf])
+            
+        if status and status != "All":
+            sql_query += " AND result = ?"
+            params.append(status)
+            
+        sql_query += " ORDER BY datetime DESC"
+        self.cursor.execute(sql_query, params)
+        self.records = self.cursor.fetchall()
+        
+        theme_name = "dark" if self.dark_mode else "light"
+        self.tree.tag_configure("pass_row", background=self.themes[theme_name]["pass_bg"])
+        self.tree.tag_configure("fail_row", background=self.themes[theme_name]["fail_bg"])
+        
+        pass_c = sum(1 for r in self.records if r[4] == "Pass")
+        fail_c = sum(1 for r in self.records if r[4] == "Fail")
+        yield_p = round((pass_c / len(self.records)) * 100, 1) if self.records else 100.0
+        
+        for row in self.records:
+            tag = "pass_row" if row[4] == "Pass" else "fail_row"
+            self.tree.insert("", "end", iid=str(row[0]), values=row[1:], tags=(tag,))
+            
+        self.lbl_status.config(text=self.lang_dict[self.current_lang]["status_total"].format(len(self.records), yield_p))
+        self.update_dashboard(pass_c, fail_c)
+        self.tree.bind("<Double-1>", self.open_log_viewer)
+
+    def update_dashboard(self, pass_c, fail_c):
+        theme = self.themes["dark" if self.dark_mode else "light"]
+        self.ax.clear()
+        self.fig.set_facecolor(theme["card"])
+        self.ax.set_facecolor(theme["card"])
+        
+        cats = ['Pass', 'Fail'] if self.current_lang == "ENG" else ['Aprobados', 'Fallidos']
+        bars = self.ax.barh(cats, [pass_c, fail_c], color=['#34C759', '#FF3B30'], height=0.55)
+        
+        for s in ['top', 'right']: 
+            self.ax.spines[s].set_visible(False)
+        self.ax.spines['left'].set_color(theme["text_sub"])
+        self.ax.spines['bottom'].set_color(theme["text_sub"])
+        self.ax.tick_params(colors=theme["text"], labelsize=9)
+        
+        for bar in bars:
+            w = bar.get_width()
+            self.ax.text(w + 0.1, bar.get_y() + bar.get_height()/2, f'{int(w)}', 
+                         va='center', ha='left', color=theme["text"], fontsize=9, fontweight='bold')
+            
+        self.fig.tight_layout()
+        self.canvas_plot.draw()
+
+
+
+    def start_async_scan(self):
+        self.btn_scan.config(state="disabled")
+        threading.Thread(target=self.scan_server_logs, args=(True,), daemon=True).start()
+
+    def scan_server_logs(self, show_alert=False):
+        try:
+            start_d = self.e_start.get_date()
+            end_d = self.e_end.get_date()
+        except Exception:
+            if show_alert:
+                self.root.after(0, lambda: messagebox.showerror("Error", "Error al leer calendarios."))
+            self.root.after(0, lambda: self.btn_scan.config(state="normal"))
+            return
+            
+        if not os.path.exists(self.log_directory):
+            if show_alert:
+                self.root.after(0, lambda: messagebox.showerror("Error", f"Ruta vacía: {self.log_directory}"))
+            self.root.after(0, lambda: self.btn_scan.config(state="normal"))
+            return
+            
+        files = glob.glob(os.path.join(self.log_directory, "**", "*.txt"), recursive=True)
+        files += glob.glob(os.path.join(self.log_directory, "**", "*.log"), recursive=True)
+        
+        valid_files = []
+        for f in files:
+            try:
+                f_date = datetime.datetime.fromtimestamp(os.path.getmtime(f)).date()
+                if start_d <= f_date <= end_d: valid_files.append(f)
+            except Exception: continue
+            
+        total = len(valid_files)
+        if total == 0:
+            if show_alert:
+                self.root.after(0, lambda: messagebox.showinfo("Scanner", "0 logs hallados."))
+            self.root.after(0, lambda: self.btn_scan.config(state="normal"))
+            return
+            
+        imported = 0
+        local_conn = sqlite3.connect("npi_automated_quality.db")
+        local_cursor = local_conn.cursor()
+        
+        for i, f_path in enumerate(valid_files):
+            serial, model, test, result, dt = LogParserEngine.parse_file(f_path)
+            if serial and dt:
+                try:
+                    local_cursor.execute("""
+                        INSERT INTO server_logs (serial, model, test, result, datetime, user) 
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (serial, model, test, result, dt, getpass.getuser()))
+                    imported += 1
+                except sqlite3.IntegrityError: pass
+            
+            prod = int(((i + 1) / total) * 100)
+            self.root.after(0, lambda p=prod: self.progress.configure(value=p))
+            
+        local_conn.commit()
+        local_cursor.close()
+        local_conn.close()
+        
+        self.root.after(0, lambda: self.load_data(self.search_var.get(), self.status_filter.get()))
+        self.root.after(0, lambda: self.progress.configure(value=0))
+        self.root.after(0, lambda: self.btn_scan.config(state="normal"))
+        
+        if show_alert and imported > 0:
+            self.root.after(0, lambda: messagebox.showinfo("Scanner", f"Listo. Añadidos: {imported}"))
+
+    def toggle_live_mode(self):
+        self.live_mode = not self.live_mode
+        lbl = ("📡 Modo En Vivo: ON" if self.live_mode else "📡 Modo En Vivo: OFF") if self.current_lang == "ESP" else ("📡 Live Mode: ON" if self.live_mode else "📡 Live Mode: OFF")
+        self.btn_live.config(text=lbl, bg="#34C759" if self.live_mode else self.themes["dark" if self.dark_mode else "light"]["card"])
+
+    def run_live_loop(self):
+        if self.live_mode:
+            threading.Thread(target=self.scan_server_logs, args=(False,), daemon=True).start()
+        self.root.after(5000, self.run_live_loop)
+
+    def open_log_viewer(self, event):
+        sel = self.tree.selection()
+        if not sel: return
+        item_values = self.tree.item(sel, "values")
+        if not item_values: return
+        
+        serial_sel = str(item_values[0]).strip().upper()
+        
+        files = glob.glob(os.path.join(self.log_directory, "**", f"*{serial_sel}*.*"), recursive=True)
+        if not files:
+            all_text_files = glob.glob(os.path.join(self.log_directory, "**", "*.txt"), recursive=True)
+            all_text_files += glob.glob(os.path.join(self.log_directory, "**", "*.log"), recursive=True)
+            for f in all_text_files:
+                try:
+                    if serial_sel in f:
+                        files.append(f)
+                        break
+                except Exception: continue
+                    
+        target_file = files[0] if files else None
+        if not target_file or not os.path.exists(target_file):
+            messagebox.showwarning("Visor Logs", f"No se encontró archivo para: {serial_sel}")
+            return
+            
+        win = tk.Toplevel(self.root)
+        win.title(f"Log Viewer - Serial: {serial_sel}")
+        win.geometry("750x550")
+        theme = self.themes["dark" if self.dark_mode else "light"]
+        win.config(bg=theme["bg"])
+        
+        txt_frame = tk.Frame(win, bg=theme["card"], bd=0)
+        txt_frame.pack(fill="both", expand=True, padx=15, pady=15)
+        
+        scr = tk.Scrollbar(txt_frame)
+        scr.pack(side="right", fill="y")
+        
+        box = tk.Text(txt_frame, wrap="word", yscrollcommand=scr.set, font=("Consolas", 10), bd=0, bg=theme["card"], fg=theme["text"])
+        box.pack(side="left", fill="both", expand=True)
+        scr.config(command=box.yview)
+        
+        try:
+            with open(target_file, "r", encoding="utf-8", errors='ignore') as fd:
+                box.insert("1.0", fd.read())
+        except Exception as e:
+            box.insert("1.0", f"Error: {e}")
+        box.config(state="disabled")
+
+
+    def delete_item(self):
+        sel = self.tree.selection()
+        if not sel: return
+        self.cursor.execute("DELETE FROM server_logs WHERE id = ?", (sel[0],))
+        self.conn.commit()
+        self.load_data(self.search_var.get(), self.status_filter.get())
+
+    def clear_database(self):
+        if messagebox.askyesno(self.lang_dict[self.current_lang]["clear_title"], self.lang_dict[self.current_lang]["clear_msg"]):
+            self.cursor.execute("DELETE FROM server_logs")
+            self.conn.commit()
+            self.load_data()
+
+    def toggle_lang(self):
+        self.current_lang = "ESP" if self.current_lang == "ENG" else "ENG"
+        self.update_ui_text()
+
+    def update_ui_text(self):
+        ld = self.lang_dict[self.current_lang]
+        self.lbl_title.config(text=ld["title"])
+        self.b_lang.config(text="ESP" if self.current_lang == "ENG" else "ENG")
+        self.l_start.config(text=ld["start_date"])
+        self.l_end.config(text=ld["end_date"])
+        self.btn_scan.config(text=ld["b_scan"])
+        self.btn_clear_db.config(text=ld["b_clear_db"])
+        self.btn_del.config(text=ld["b_del"])
+        self.btn_pdf.config(text=ld["b_pdf"])
+        self.btn_excel.config(text=ld["b_excel"])
+        if not self.live_mode: self.btn_live.config(text=ld["b_live"])
+        
+        headers = [ld["t_ser"], ld["t_mod"], ld["t_tst"], ld["t_res"], ld["t_dt"], ld["t_usr"]]
+        columns = ("serial", "model", "test", "result", "datetime", "user")
+        widths = [140, 110, 115, 80, 140, 115]
+        
+        for col, name, w in zip(columns, headers, widths):
+            self.tree.heading(col, text=name, anchor="w")
+            self.tree.column(col, width=w, minwidth=w, stretch=True)
+
+    def toggle_theme(self, init=False):
+        if not init: self.dark_mode = not self.dark_mode
+        theme = self.themes["dark" if self.dark_mode else "light"]
+        
+        self.b_theme.config(text="☀️" if self.dark_mode else "🌙", bg=theme["card"], fg=theme["text"])
+        self.root.config(bg=theme["bg"])
+        self.navbar.config(bg=theme["bg"])
+        self.nav_controls_frame.config(bg=theme["bg"])
+        self.cuerpo.config(bg=theme["bg"])
+        self.derecha.config(bg=theme["bg"])
+        self.chart_frame.config(bg=theme["card"])
+        self.actions_frame.config(bg=theme["bg"])
+        self.frame_form.config(bg=theme["card"])
+        self.filter_frame.config(bg=theme["bg"])
+        
+        for l in [self.lbl_title, self.l_start, self.l_end, self.lbl_status]:
+            l.config(bg=theme["card"] if l not in [self.lbl_title, self.lbl_status] else theme["bg"], fg=theme["text"])
+            
+        self.e_search.config(bg=theme["card"], fg=theme["text"], highlightbackground=theme["border"])
+        self.btn_scan.config(bg=theme["accent"], fg="#FFFFFF")
+        if not self.live_mode: self.btn_live.config(bg=theme["card"], fg=theme["text"])
+        
+        for btn in [self.btn_del, self.btn_clear_db, self.btn_pdf, self.btn_excel]:
+            btn.config(bg=theme["card"], fg=theme["danger"] if btn in [self.btn_del, self.btn_clear_db] else theme["text"])
+            
+        self.style.configure("Treeview", background=theme["card"], fieldbackground=theme["card"], foreground=theme["text"], borderwidth=0, font=("Inter", 9))
+        self.style.configure("Treeview.Heading", background=theme["entry_bg"], foreground=theme["text"], font=("Inter", 9, "bold"))
+        self.style.map("Treeview", background=[("selected", theme["accent"])], foreground=[("selected", "#FFFFFF")])
+        if not init: self.load_data(self.search_var.get(), self.status_filter.get())
+
+    def export_excel(self):
+        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+        filename = os.path.join(desktop, f"Server_NPI_Export_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+        ld = self.lang_dict[self.current_lang]
+        try:
+            with open(filename, mode='w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.writer(f, delimiter=';')
+                writer.writerow([ld["t_ser"], ld["t_mod"], ld["t_tst"], ld["t_res"], ld["t_dt"], ld["t_usr"]])
+                for r in self.records: writer.writerow(r[1:])
+            messagebox.showinfo("Excel", "Exportado en Escritorio.")
+        except Exception as e: messagebox.showerror("Error", str(e))
+
+    def export_pdf(self):
+        desktop = os.path.join(os.path.expanduser("~"), "Desktop")
+        filename = os.path.join(desktop, f"NPI_Server_Report_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf")
+        ld = self.lang_dict[self.current_lang]
+        
+        doc = SimpleDocTemplate(filename, pagesize=letter, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30)
+        story = []
+        styles = getSampleStyleSheet()
+        
+        t_style = ParagraphStyle('T', parent=styles['Heading1'], fontName='Helvetica-Bold', fontSize=18, textColor=colors.HexColor('#0071E3'))
+        c_style = ParagraphStyle('C', parent=styles['Normal'], fontName='Helvetica', fontSize=8, leading=10)
+        
+        story.append(Paragraph(ld["title"], t_style))
+        story.append(Spacer(1, 15))
+        
+        table_data = [[Paragraph(f"<b>{h}</b>", c_style) for h in [ld["t_ser"], ld["t_mod"], ld["t_tst"], ld["t_res"], ld["t_dt"]]]]
+        for row in self.records: table_data.append([Paragraph(str(item), c_style) for item in row[1:6]])
+            
+        pdf_table = Table(table_data, colWidths=[100, 90, 100, 70, 140])
+        ts = TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#F5F5F7')),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#E5E5EA')),
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ])
+        
+        for i, r in enumerate(self.records, start=1):
+            bg = colors.HexColor('#E8F5E9') if r[4] == "Pass" else colors.HexColor('#FFEBEE')
+            ts.add('BACKGROUND', (0, i), (-1, i), bg)
+            
+        pdf_table.setStyle(ts)
+        story.append(pdf_table)
+        doc.build(story)
+        messagebox.showinfo("PDF", "Reporte PDF guardado.")
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = NPIApp(root)
+    root.mainloop()
