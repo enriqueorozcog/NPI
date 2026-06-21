@@ -13,6 +13,12 @@ class NPIApp:
         self.root.geometry("950x650")
         self.root.resizable(False, False)
         
+        # Intentar cargar el icono estilo Apple
+        try:
+            self.root.iconbitmap("app_icon.ico")
+        except Exception:
+            pass
+        
         self.current_lang = "ENG"
         self.dark_mode = False
         self.records = []
@@ -85,8 +91,7 @@ class NPIApp:
         self.cuerpo = tk.Frame(self.root)
         self.cuerpo.pack(fill="both", expand=True, padx=30, pady=20)
         
-        # Panel Izquierdo: Formulario (Card minimalista)
-        # ASÍ DEBE QUEDAR (Código corregido):
+        # Panel Izquierdo: Formulario (Card minimalista) con width correcto en el constructor
         self.frame_form = tk.Frame(self.cuerpo, bd=0, padx=20, pady=20, width=310)
         self.frame_form.pack(side="left", fill="both", expand=False)
         self.frame_form.pack_propagate(False)
@@ -188,41 +193,32 @@ class NPIApp:
         self.update_theme()
         
     def update_theme(self):
-        # Selección de paleta activa
         t = self.themes["dark"] if self.dark_mode else self.themes["light"]
         
-        # Actualización de Contenedores Base
         self.root.config(bg=t["bg"])
         self.navbar.config(bg=t["bg"])
         self.cuerpo.config(bg=t["bg"])
         self.tabla_frame.config(bg=t["bg"])
         self.btn_actions_frame.config(bg=t["bg"])
-        
-        # Título principal
+                # Configuración visual del Modo Claro / Oscuro (Continuación de update_theme)
         self.lbl_title.config(bg=t["bg"], fg=t["text"])
-        
-        # Botones de navegación superiores
         self.b_lang.config(bg=t["card"], fg=t["accent"], activebackground=t["border"], activeforeground=t["accent"])
         self.b_theme.config(bg=t["card"], fg=t["text"], activebackground=t["border"], activeforeground=t["text"])
-
-        # Tarjeta del Formulario (Contenedor agrupador estilizado)
+        
         self.frame_form.config(bg=t["card"])
         for w in self.frame_form.winfo_children():
             if isinstance(w, tk.Label):
                 w.config(bg=t["card"], fg=t["text"])
-
-        # Estilos de Inputs (Entradas de texto limpias sin bordes Windows 95)
+                
         input_widgets = [self.e_ser, self.e_mod, self.t_com]
         for item in input_widgets:
             item.config(bg=t["entry_bg"], fg=t["text"], insertbackground=t["text"],
                         highlightbackground=t["border"], highlightcolor=t["accent"])
-
-        # Configuración de Botones Principales de Acción
+                        
         self.btn_save.config(bg=t["accent"], fg="#FFFFFF", activebackground=t["accent"])
         self.btn_del.config(bg=t["card"], fg=t["danger"], activebackground=t["border"], activeforeground=t["danger"])
         self.btn_pdf.config(bg=t["accent"], fg="#FFFFFF", activebackground=t["accent"])
-
-        # Personalización Avanzada de la Tabla (Treeview) vía TTK Styles
+        
         self.style.configure("Treeview",
                              background=t["card"],
                              fieldbackground=t["card"],
@@ -230,20 +226,16 @@ class NPIApp:
                              rowheight=32,
                              font=("SF Pro Text", 10),
                              borderwidth=0)
-        
+                             
         self.style.configure("Treeview.Heading",
                              background=t["entry_bg"],
                              foreground=t["text_sub"],
                              font=("SF Pro Text", 9, "bold"),
                              relief="flat",
                              padding=8)
-
-        # Efecto visual al seleccionar filas en la tabla
-        self.style.map("Treeview",
-                       background=[("selected", t["accent"])],
-                       foreground=[("selected", "#FFFFFF")])
-        self.style.map("Treeview.Heading",
-                       background=[("active", t["border"])])
+                             
+        self.style.map("Treeview", background=[("selected", t["accent"])], foreground=[("selected", "#FFFFFF")])
+        self.style.map("Treeview.Heading", background=[("active", t["border"])])
 
     def add_item(self):
         tx = self.lang_dict[self.current_lang]
@@ -275,11 +267,141 @@ class NPIApp:
             messagebox.showwarning("Error", tx["pdf_err"])
             return
             
-        doc = SimpleDocTemplate("NPI_Report.pdf", pagesize=letter)
-        # Nota: Aquí continúa tu lógica previa de ReportLab...
-        messagebox.showinfo("Success", tx["pdf_ok"])
+        try:
+            import os
+            from reportlab.graphics.shapes import Drawing
+            from reportlab.graphics.charts.piecharts import Pie
+            from reportlab.graphics.charts.legends import Legend
+            
+            nombre_archivo = "NPI_Report.pdf"
+            doc = SimpleDocTemplate(
+                nombre_archivo,
+                pagesize=letter,
+                rightMargin=40,
+                leftMargin=40,
+                topMargin=40,
+                bottomMargin=40
+            )
+            
+            styles = getSampleStyleSheet()
+            c_text = colors.HexColor("#1D1D1F")
+            c_sub = colors.HexColor("#86868B")
+            c_bg_header = colors.HexColor("#F5F5F7")
+            c_border = colors.HexColor("#E5E5EA")
+            
+            style_title = ParagraphStyle(
+                'AppleTitle', parent=styles['Normal'], fontName='Helvetica-Bold',
+                fontSize=24, leading=28, textColor=c_text, spaceAfter=4
+            )
+            style_subtitle = ParagraphStyle(
+                'AppleSubtitle', parent=styles['Normal'], fontName='Helvetica',
+                fontSize=10, leading=14, textColor=c_sub, spaceAfter=15
+            )
+            style_section = ParagraphStyle(
+                'AppleSection', parent=styles['Normal'], fontName='Helvetica-Bold',
+                fontSize=14, leading=18, textColor=c_text, spaceBefore=15, spaceAfter=10
+            )
+            style_th = ParagraphStyle(
+                'AppleTH', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=10, leading=12, textColor=c_text
+            )
+            style_td = ParagraphStyle(
+                'AppleTD', parent=styles['Normal'], fontName='Helvetica', fontSize=9, leading=13, textColor=c_text
+            )
+            
+            story = []
+            
+            titulo_texto = "NPI Validation Report" if self.current_lang == "ENG" else "Reporte de Validación NPI"
+            story.append(Paragraph(titulo_texto, style_title))
+            
+            fecha_actual = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            sub_texto = f"Generated on: {fecha_actual}  |  System Status: Active" if self.current_lang == "ENG" else f"Generado el: {fecha_actual}  |  Estado del Sistema: Activo"
+            story.append(Paragraph(sub_texto, style_subtitle))
+            story.append(Spacer(1, 10))
+            
+            sec_stats = "Validation Statistics" if self.current_lang == "ENG" else "Estadísticas de Validación"
+            story.append(Paragraph(sec_stats, style_section))
+            
+            # Conteo dinámico analizando la posición del resultado
+            passes = sum(1 for row in self.records if row[3] == "Pass")
+            fails = sum(1 for row in self.records if row[3] == "Fail")
+            total = len(self.records)
+            
+            d = Drawing(400, 160)
+            pc = Pie()
+            pc.x = 20
+            pc.y = 20
+            pc.width = 120
+            pc.height = 120
+            pc.data = [passes, fails]
+            pc.labels = [f'{int((passes/total)*100)}%' if passes > 0 else '', f'{int((fails/total)*100)}%' if fails > 0 else '']
+            pc.sideLabels = False
+            
+            pc.slices.fillColor = colors.HexColor("#34C759")
+            pc.slices[1].fillColor = colors.HexColor("#FF3B30")
+            pc.slices.strokeColor = colors.white
+            pc.slices.strokeWidth = 1.5
+            d.add(pc)
+            
+            leg = Legend()
+            leg.x = 180
+            leg.y = 110
+            leg.dx = 10
+            leg.dy = 10
+            leg.fontName = 'Helvetica'
+            leg.fontSize = 10
+            leg.boxAnchor = 'nw'
+            leg.columnMaximum = 2
+            leg.strokeWidth = 0
+            leg.strokeColor = colors.transparent
+            leg.colorNamePairs = [(colors.HexColor("#34C759"), f'Pass ({passes})'), (colors.HexColor("#FF3B30"), f'Fail ({fails})')]
+            d.add(leg)
+            
+            story.append(d)
+            story.append(Spacer(1, 15))
+            
+            sec_records = "Detailed Records" if self.current_lang == "ENG" else "Registros Detallados"
+            story.append(Paragraph(sec_records, style_section))
+            
+            headers = [tx["t_ser"], tx["t_mod"], tx["t_tst"], tx["t_res"], tx["t_com"]]
+            tabla_datos = [[Paragraph(h, style_th) for h in headers]]
+            
+            for row in self.records:
+                fila_estilizada = []
+                for cell in row:
+                    if cell in ["Pass", "Fail"]:
+                        color_resultado = colors.HexColor("#34C759") if cell == "Pass" else colors.HexColor("#FF3B30")
+                        style_res = ParagraphStyle('ResStyle', parent=style_td, fontName='Helvetica-Bold', textColor=color_resultado)
+                        fila_estilizada.append(Paragraph(str(cell), style_res))
+                    else:
+                        fila_estilizada.append(Paragraph(str(cell), style_td))
+                tabla_datos.append(fila_estilizada)
+                
+            tabla_pdf = Table(tabla_datos, colWidths=[90, 90, 110, 70, 172])
+            tabla_pdf.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), c_bg_header),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('TOPPADDING', (0, 0), (-1, -1), 8),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+                ('LEFTPADDING', (0, 0), (-1, -1), 12),
+                ('RIGHTPADDING', (0, 0), (-1, -1), 12),
+                ('LINEBELOW', (0, 0), (-1, 0), 1.5, c_text),
+                ('LINEBELOW', (0, 1), (-1, -1), 0.5, c_border),
+            ]))
+            
+            story.append(tabla_pdf)
+            doc.build(story)
+            
+            if os.name == 'nt':
+                os.startfile(nombre_archivo)
+            else:
+                os.system(f'open "{nombre_archivo}"' if os.uname().sysname == 'Darwin' else f'xdg-open "{nombre_archivo}"')
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not generate PDF:\n{str(e)}")
 
 if __name__ == "__main__":
     root = tk.Tk()
     app = NPIApp(root)
     root.mainloop()
+
