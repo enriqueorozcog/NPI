@@ -1,0 +1,800 @@
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+import sqlite3
+import os
+import re
+import json
+import glob
+import csv
+import datetime
+import getpass
+import threading
+
+# Conector nativo de alto rendimiento para base de datos Oracle
+import oracledb
+
+from tkcalendar import DateEntry
+
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+
+import matplotlib
+matplotlib.use("TkAgg")
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
+
+
+class LogParserEngine:
+    """Motor analítico para parseo de logs con JSON embebido (Compatibilidad Local)."""
+
+    @staticmethod
+    def parse_file(file_path):
+        serial, model, test = None, None, None
+        result, dt = "Fail", None
+
+        ts_re = re.compile(r"^\[(?P<dt>\d{4}-\d{2}-\d{2})T(?P<t>\d{2}:\d{2}:\d{2})")
+        js_re = re.compile(r"-\s+(\{.*ProductName.*SerialNumber.*\})")
+
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+                f.seek(0)
+
+                for line in f:
+                    if not dt:
+                        ts_m = ts_re.match(line)
+                        if ts_m:
+                            dt = f"{ts_m.group('dt')} {ts_m.group('t')}"
+
+                    if "Starting CrewReprovision..." in line:
+                        test = "Provision"
+                    elif "Starting CrewDevicePrep..." in line:
+                        test = "DevicePrep"
+
+                    js_m = js_re.search(line)
+                    if js_m:
+                        try:
+                            d = json.loads(js_m.group(1))
+                            serial = d.get("SerialNumber") or d.get("SystemDutSn")
+                            model = d.get("ProductName") or d.get("Project")
+                        except Exception:
+                            pass
+
+            if "Crew-DevicePrep Success" in content or "Crew-Reprovision Success" in content:
+                result = "Pass"
+            else:
+                result = "Fail"
+
+        except Exception as e:
+            print(f"Error parseando {file_path}: {e}")
+
+        return serial, model, test, result, dt
+
+
+class NPIApp:
+    """NPI Quality Control Intelligence con integración Oracle Central."""
+
+    def __init__(self, root):
+        self.root = root
+        self.root.title("NPI Quality Control Intelligence")
+        self.root.geometry("1220x820")
+        self.root.minsize(1100, 740)
+        self.root.resizable(True, True)
+
+        self.current_lang = "ESP"
+        self.dark_mode = True
+        self.records = []
+        self.canvas_plot = None
+        self.log_directory = r"C:\PruebasLogs"
+        self.live_mode = False
+        self.is_scanning = False
+
+        self.init_database()
+
+        self.themes = {
+            "dark": {
+                "window": "#0B0B0F", "surface": "#131318", "surface_2": "#1C1C22",
+                "card": "#1E1E24", "card_2": "#24242B", "border": "#33333B",
+                "text": "#F5F5F7", "muted": "#A1A1AA", "muted_2": "#73737D",
+                "accent": "#0A84FF", "accent_hover": "#2997FF", "success": "#30D158",
+                "danger": "#FF453A", "warning": "#FFD60A", "entry": "#16161C",
+                "pass_bg": "#112D1A", "fail_bg": "#351615", "selected": "#0A84FF",
+                "button_secondary": "#2A2A32", "button_secondary_hover": "#34343D"
+            },
+            "light": {
+                "window": "#F5F5F7", "surface": "#FFFFFF", "surface_2": "#F2F2F7",
+                "card": "#FFFFFF", "card_2": "#FAFAFC", "border": "#D8D8E0",
+                "text": "#1D1D1F", "muted": "#6E6E73", "muted_2": "#8E8E93",
+                "accent": "#007AFF", "accent_hover": "#0066CC", "success": "#34C759",
+                "danger": "#FF3B30", "warning": "#FF9500", "entry": "#FFFFFF",
+                "pass_bg": "#EAF8EF", "fail_bg": "#FDECEC", "selected": "#007AFF",
+                "button_secondary": "#EFEFF4", "button_secondary_hover": "#E5E5EA"
+            }
+        }
+
+
+
+        self.lang_dict = {
+            "ESP": {
+                "title": "NPI Quality Control Intelligence",
+                "subtitle": "Inteligencia automatizada para logs, yield, fallas y control de calidad",
+                "controls": "Controles", "date_range": "Rango de fechas",
+                "start_date": "Fecha inicio", "end_date": "Fecha fin",
+                "scan": "Refresh Panel", "live_off": "Modo en vivo: OFF",
+                "live_on": "Modo en vivo: ON", "reset_db": "Limpiar base de datos",
+                "delete": "Eliminar seleccionado", "export_csv": "Exportar CSV",
+                "export_pdf": "Exportar PDF", "records": "Registros",
+                "yield": "Yield", "pass": "Pass", "fail": "Fail",
+                "search": "Buscar por serial o modelo", "status": "Estatus",
+                "all": "Todos", "table_title": "Inspection records",
+                "chart_title": "Result distribution", "serial": "Serial",
+                "model": "Modelo", "test": "Prueba", "result": "Resultado",
+                "datetime": "Timestamp", "user": "Operator",
+                "clear_title": "¿Limpiar base de datos?",
+                "clear_msg": "Esta acción eliminará todos los registros locales. ¿Deseas continuar?",
+                "log_not_found": "No se encontró archivo de log para:",
+                "scanner_empty": "No se encontraron logs en el rango seleccionado.",
+                "scanner_done": "Carga finalizada. Registros añadidos:",
+                "path_missing": "Ruta no encontrada:"
+            },
+            "ENG": {
+                "title": "NPI Quality Control Intelligence",
+                "subtitle": "Automated intelligence for logs, yield, failures and quality control",
+                "controls": "Controls", "date_range": "Date range",
+                "start_date": "Start date", "end_date": "End date",
+                "scan": "Refresh Panel", "live_off": "Live mode: OFF",
+                "live_on": "Live mode: ON", "reset_db": "Reset database",
+                "delete": "Delete selected", "export_csv": "Export CSV",
+                "export_pdf": "Export PDF", "records": "Records",
+                "yield": "Yield", "pass": "Pass", "fail": "Fail",
+                "search": "Search by serial or model", "status": "Status",
+                "all": "All", "table_title": "Inspection records",
+                "chart_title": "Result distribution", "serial": "Serial",
+                "model": "Model", "test": "Test", "result": "Result",
+                "datetime": "Timestamp", "user": "Operator",
+                "clear_title": "Reset database?",
+                "clear_msg": "This will delete all local records. Do you want to continue?",
+                "log_not_found": "No log file found for:",
+                "scanner_empty": "No logs found in the selected range.",
+                "scanner_done": "Scan completed. Records added:",
+                "path_missing": "Path not found:"
+            }
+        }
+
+        self.style = ttk.Style()
+        self.style.theme_use("clam")
+
+        self.build_ui()
+        self.update_ui_text()
+        self.apply_theme(init=True)
+        self.load_data()
+        self.run_live_loop()
+
+    def init_database(self):
+        """Conexión local SQLite para almacenamiento en caché de contingencia."""
+        self.conn = sqlite3.connect("npi_automated_quality.db")
+        self.cursor_local = self.conn.cursor()
+        self.cursor_local.execute("""
+            CREATE TABLE IF NOT EXISTS server_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                serial TEXT NOT NULL,
+                model TEXT NOT NULL,
+                test TEXT NOT NULL,
+                result TEXT NOT NULL,
+                datetime TEXT NOT NULL,
+                user TEXT NOT NULL,
+                UNIQUE(serial, datetime)
+            )
+        """)
+        self.conn.commit()
+
+
+    def build_ui(self):
+        """Maquetación de la UI tipo macOS con Tkinter."""
+        self.root.grid_rowconfigure(0, weight=1)
+        self.root.grid_columnconfigure(0, weight=1)
+
+        self.app = tk.Frame(self.root)
+        self.app.grid(row=0, column=0, sticky="nsew")
+        self.app.grid_rowconfigure(1, weight=1)
+        self.app.grid_columnconfigure(1, weight=1)
+
+        # HEADER (Encabezado de la App)
+        self.header = tk.Frame(self.app, height=86)
+        self.header.grid(row=0, column=0, columnspan=2, sticky="ew", padx=30, pady=(22, 12))
+        self.header.grid_columnconfigure(0, weight=1)
+        self.header.grid_propagate(False)
+
+        self.title_container = tk.Frame(self.header)
+        self.title_container.grid(row=0, column=0, sticky="w")
+
+        self.lbl_title = tk.Label(self.title_container, font=("Segoe UI", 22, "bold"), anchor="w")
+        self.lbl_title.pack(anchor="w")
+
+        self.lbl_subtitle = tk.Label(self.title_container, font=("Segoe UI", 10), anchor="w")
+        self.lbl_subtitle.pack(anchor="w", pady=(4, 0))
+
+        self.header_buttons = tk.Frame(self.header)
+        self.header_buttons.grid(row=0, column=1, sticky="e")
+
+        self.btn_lang = tk.Button(self.header_buttons, font=("Segoe UI", 9, "bold"), bd=0, cursor="hand2", padx=16, pady=9, command=self.toggle_lang)
+        self.btn_lang.pack(side="left", padx=(0, 10))
+
+        self.btn_theme = tk.Button(self.header_buttons, font=("Segoe UI", 12, "bold"), bd=0, cursor="hand2", width=4, padx=10, pady=8, command=self.toggle_theme)
+        self.btn_theme.pack(side="left")
+
+        # SIDEBAR (Barra de Controles Lateral Izquierda)
+        self.sidebar = tk.Frame(self.app, width=300)
+        self.sidebar.grid(row=1, column=0, sticky="nsw", padx=(30, 12), pady=(0, 28))
+        self.sidebar.grid_propagate(False)
+
+        self.lbl_controls = tk.Label(self.sidebar, font=("Segoe UI", 14, "bold"), anchor="w")
+        self.lbl_controls.pack(fill="x", padx=22, pady=(22, 18))
+
+        self.lbl_date_range = tk.Label(self.sidebar, font=("Segoe UI", 9, "bold"), anchor="w")
+        self.lbl_date_range.pack(fill="x", padx=22, pady=(0, 14))
+
+        self.lbl_start = tk.Label(self.sidebar, font=("Segoe UI", 9), anchor="w")
+        self.lbl_start.pack(fill="x", padx=22, pady=(0, 5))
+
+        self.date_start = DateEntry(self.sidebar, date_pattern="yyyy-mm-dd", font=("Segoe UI", 10), borderwidth=0)
+        self.date_start.pack(fill="x", padx=22, ipady=6, pady=(0, 16))
+
+        self.lbl_end = tk.Label(self.sidebar, font=("Segoe UI", 9), anchor="w")
+        self.lbl_end.pack(fill="x", padx=22, pady=(0, 5))
+
+        self.date_end = DateEntry(self.sidebar, date_pattern="yyyy-mm-dd", font=("Segoe UI", 10), borderwidth=0)
+        self.date_end.pack(fill="x", padx=22, ipady=6, pady=(0, 22))
+
+        self.date_start.bind("<<DateEntrySelected>>", lambda e: self.load_data())
+        self.date_end.bind("<<DateEntrySelected>>", lambda e: self.load_data())
+
+        self.btn_scan = tk.Button(self.sidebar, bd=0, font=("Segoe UI", 10, "bold"), cursor="hand2", pady=12, command=self.load_data)
+        self.btn_scan.pack(fill="x", padx=22, pady=(0, 10))
+
+        self.btn_live = tk.Button(self.sidebar, bd=0, font=("Segoe UI", 10, "bold"), cursor="hand2", pady=12, command=self.toggle_live_mode)
+        self.btn_live.pack(fill="x", padx=22, pady=(0, 18))
+
+        self.progress = ttk.Progressbar(self.sidebar, orient="horizontal", mode="determinate")
+        self.progress.pack(fill="x", padx=22, pady=(0, 24))
+
+        self.sidebar_line = tk.Frame(self.sidebar, height=1)
+        self.sidebar_line.pack(fill="x", padx=22, pady=(0, 20))
+
+        self.btn_reset = tk.Button(self.sidebar, bd=0, font=("Segoe UI", 9, "bold"), cursor="hand2", pady=9, command=self.reset_local_db)
+        self.btn_reset.pack(fill="x", padx=22, pady=(0, 8))
+
+        self.btn_delete = tk.Button(self.sidebar, bd=0, font=("Segoe UI", 9, "bold"), cursor="hand2", pady=9, command=self.delete_selected_record)
+        self.btn_delete.pack(fill="x", padx=22, pady=(0, 8))
+
+        self.btn_export_csv = tk.Button(self.sidebar, bd=0, font=("Segoe UI", 9, "bold"), cursor="hand2", pady=9, command=self.export_to_csv)
+        self.btn_export_csv.pack(fill="x", padx=22, pady=(0, 8))
+
+        self.btn_export_pdf = tk.Button(self.sidebar, bd=0, font=("Segoe UI", 9, "bold"), cursor="hand2", pady=9, command=self.export_to_pdf)
+        self.btn_export_pdf.pack(fill="x", padx=22)
+
+
+                # AREA CENTRAL DE CONTENIDO
+        self.main_container = tk.Frame(self.app)
+        self.main_container.grid(row=1, column=1, sticky="nsew", padx=(12, 30), pady=(0, 28))
+        self.main_container.grid_rowconfigure(2, weight=1)
+        self.main_container.grid_columnconfigure(0, weight=1)
+
+        # CARDS SUPERIORES DE MÉTRICAS
+        self.cards_frame = tk.Frame(self.main_container)
+        self.cards_frame.grid(row=0, column=0, sticky="ew", pady=(0, 16))
+        for i in range(4):
+            self.cards_frame.grid_columnconfigure(i, weight=1)
+
+        self.card_total = tk.Frame(self.cards_frame, height=94)
+        self.card_total.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self.card_total.pack_propagate(False)
+        self.lbl_card_total_title = tk.Label(self.card_total, font=("Segoe UI", 9, "bold"), anchor="w")
+        self.lbl_card_total_title.pack(fill="x", padx=16, pady=(12, 2))
+        self.lbl_card_total_val = tk.Label(self.card_total, text="0", font=("Segoe UI", 24, "bold"), anchor="w")
+        self.lbl_card_total_val.pack(fill="x", padx=16)
+
+        self.card_yield = tk.Frame(self.cards_frame, height=94)
+        self.card_yield.grid(row=0, column=1, sticky="ew", padx=4)
+        self.card_yield.pack_propagate(False)
+        self.lbl_card_yield_title = tk.Label(self.card_yield, font=("Segoe UI", 9, "bold"), anchor="w")
+        self.lbl_card_yield_title.pack(fill="x", padx=16, pady=(12, 2))
+        self.lbl_card_yield_val = tk.Label(self.card_yield, text="0.0%", font=("Segoe UI", 24, "bold"), anchor="w")
+        self.lbl_card_yield_val.pack(fill="x", padx=16)
+
+        self.card_pass = tk.Frame(self.cards_frame, height=94)
+        self.card_pass.grid(row=0, column=2, sticky="ew", padx=4)
+        self.card_pass.pack_propagate(False)
+        self.lbl_card_pass_title = tk.Label(self.card_pass, font=("Segoe UI", 9, "bold"), anchor="w")
+        self.lbl_card_pass_title.pack(fill="x", padx=16, pady=(12, 2))
+        self.lbl_card_pass_val = tk.Label(self.card_pass, text="0", font=("Segoe UI", 24, "bold"), anchor="w")
+        self.lbl_card_pass_val.pack(fill="x", padx=16)
+
+        self.card_fail = tk.Frame(self.cards_frame, height=94)
+        self.card_fail.grid(row=0, column=3, sticky="ew", padx=(8, 0))
+        self.card_fail.pack_propagate(False)
+        self.lbl_card_fail_title = tk.Label(self.card_fail, font=("Segoe UI", 9, "bold"), anchor="w")
+        self.lbl_card_fail_title.pack(fill="x", padx=16, pady=(12, 2))
+        self.lbl_card_fail_val = tk.Label(self.card_fail, text="0", font=("Segoe UI", 24, "bold"), anchor="w")
+        self.lbl_card_fail_val.pack(fill="x", padx=16)
+
+        # BARRA DE FILTRADO Y BÚSQUEDA GRID
+        self.search_frame = tk.Frame(self.main_container, height=54)
+        self.search_frame.grid(row=1, column=0, sticky="ew", pady=(0, 16))
+        self.search_frame.grid_columnconfigure(0, weight=1)
+        self.search_frame.grid_propagate(False)
+
+        self.search_var = tk.StringVar()
+        self.search_var.trace_add("write", lambda *a: self.filter_records())
+        self.txt_search = tk.Entry(self.search_frame, textvariable=self.search_var, font=("Segoe UI", 10), bd=0)
+        self.txt_search.grid(row=0, column=0, sticky="ew", padx=16, pady=13)
+
+        self.lbl_filter_status = tk.Label(self.search_frame, font=("Segoe UI", 9, "bold"))
+        self.lbl_filter_status.grid(row=0, column=1, padx=(16, 8), pady=13)
+
+        self.cmb_status = ttk.Combobox(self.search_frame, font=("Segoe UI", 10), state="readonly", width=12)
+        self.cmb_status.grid(row=0, column=2, padx=(0, 16), pady=11)
+        self.cmb_status.bind("<<ComboboxSelected>>", lambda e: self.filter_records())
+
+        # TABLA DE REGISTROS PRINCIPAL (Treeview)
+        self.table_frame = tk.Frame(self.main_container)
+        self.table_frame.grid(row=2, column=0, sticky="nsew", pady=(0, 16))
+        self.table_frame.grid_rowconfigure(1, weight=1)
+        self.table_frame.grid_columnconfigure(0, weight=1)
+
+        self.lbl_table_title = tk.Label(self.table_frame, font=("Segoe UI", 12, "bold"), anchor="w")
+        self.lbl_table_title.grid(row=0, column=0, sticky="w", padx=4, pady=(0, 10))
+
+        columns = ("serial", "station", "test", "result", "timestamp", "user")
+        self.tree = ttk.Treeview(self.table_frame, columns=columns, show="headings", selectmode="browse")
+        self.tree.grid(row=1, column=0, sticky="nsew")
+
+        self.scrollbar = ttk.Scrollbar(self.table_frame, orient="vertical", command=self.tree.yview)
+        self.scrollbar.grid(row=1, column=1, sticky="ns")
+        self.tree.configure(yscrollcommand=self.scrollbar.set)
+
+                # CONTENEDOR DE GRÁFICAS (Matplotlib)
+        self.chart_frame = tk.Frame(self.main_container)
+        self.chart_frame.grid(row=3, column=0, sticky="ew")
+        self.chart_frame.grid_rowconfigure(1, weight=1)
+        self.chart_frame.grid_columnconfigure(0, weight=1)
+
+        self.lbl_chart_title = tk.Label(self.chart_frame, font=("Segoe UI", 12, "bold"), anchor="w")
+        self.lbl_chart_title.grid(row=0, column=0, sticky="w", padx=4, pady=(0, 10))
+
+        self.fig = Figure(figsize=(5, 2.2), dpi=100)
+        self.ax = self.fig.add_subplot(111)
+        self.canvas_plot = FigureCanvasTkAgg(self.fig, master=self.chart_frame)
+        self.canvas_plot.get_tk_widget().grid(row=1, column=0, sticky="ew", pady=(0, 4))
+
+    # ======================================================
+    # CONEXIÓN NATIVA Y CONSULTAS DE ORACLE CENTRAL
+    # ======================================================
+
+    def load_data(self):
+        """Conexión nativa a Oracle Central para poblar la UI en tiempo real."""
+        # Limpiar tabla visual de Treeview
+        for row in self.tree.get_children():
+            self.tree.delete(row)
+            
+        self.records = [] 
+
+        try:
+                    # Conexión nativa definitiva usando los parámetros reales de la planta
+            connection = oracledb.connect(
+                user="PMXERS_RPT",
+                password="rptPMX$2310",
+                host="10.235.5.11",
+                port=1521,
+                service_name="pmxesdb1"
+        )
+
+
+            cursor = connection.cursor()
+
+            # Captura de fecha desde los componentes del calendario
+            fecha_busqueda = self.date_start.get_date().strftime('%Y-%m-%d')
+            
+            # Consulta masiva optimizada
+            query = """
+                SELECT 
+                    SERIAL_NR AS "Serial",
+                    CURR_STATUS AS "Station",
+                    'TEST' AS "Test",
+                    MEMO AS "Result",
+                    TO_CHAR(CT_DATE, 'YYYY-MM-DD HH24:MI:SS') AS "Timestamp",
+                    'Operator' AS "User"
+                FROM ERS.ERS_ITEM_TRACK
+                WHERE CURR_STATUS IN ('MSRSFPREPARE', 'MSRSFPREPARE2', 'MSRSFFCT', 'MSRSFFCT2', 'MSRSFPROVISION')
+                  AND TRUNC(CT_DATE) = TO_DATE(:fecha, 'YYYY-MM-DD')
+                ORDER BY CT_DATE ASC
+            """
+            
+            cursor.execute(query, fecha=fecha_busqueda)
+            self.records = cursor.fetchall()
+
+            total_pass = 0
+            total_fail = 0
+
+            # Inserción de datos en caliente en la UI de Tkinter
+            for row in self.records:
+                self.tree.insert("", "end", values=row)
+                
+                # Evaluación estricta del resultado (MEMO)
+                if row[3] == "OK":
+                    total_pass += 1
+                elif row[3] == "FAIL":
+                    total_fail += 1
+
+            cursor.close()
+            connection.close()
+
+            # Refrescar los componentes analíticos e indicadores superiores
+            self.update_dashboard_metrics(total_pass, total_fail)
+            self.refresh_chart(total_pass, total_fail)
+
+        except Exception as e:
+            messagebox.showerror("Database Error", f"Fallo al conectar con Oracle: {e}")
+
+
+    # ======================================================
+    # MOTORES DE EXPORTACIÓN Y REPORTES
+    # ======================================================
+
+    def export_to_csv(self):
+        """Exporta el set de datos cargado en la UI a un archivo CSV estructurado."""
+        if not self.records:
+            messagebox.showwarning("Exportar", "No existen registros en pantalla para exportar.")
+            return
+            
+        try:
+            file_path = filedialog.asksaveasfilename(
+                defaultextension=".csv",
+                filetypes=[("Archivos CSV", "*.csv")]
+            )
+            if not file_path:
+                return
+
+            with open(file_path, mode="w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                # Encabezados formales del reporte de control de calidad
+                writer.writerow(["Serial No", "Station", "Test Action", "Result Code", "Timestamp", "Operator"])
+                
+                for row in self.records:
+                    writer.writerow(row)
+                    
+            messagebox.showinfo("Éxito", f"Reporte de producción guardado correctamente en:\n{file_path}")
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo guardar el archivo CSV: {e}")
+
+    def export_to_pdf(self):
+        """Genera un informe ejecutivo formal en formato PDF de control de calidad."""
+        if not self.records:
+            messagebox.showwarning("Exportar", "No existen registros en pantalla para generar el PDF.")
+            return
+
+        try:
+            file_path = filedialog.asksaveasfilename(
+                defaultextension=".pdf",
+                filetypes=[("Archivos PDF", "*.pdf")]
+            )
+            if not file_path:
+                return
+
+            doc = SimpleDocTemplate(file_path, pagesize=letter)
+            styles = getSampleStyleSheet()
+            story = []
+
+            # Estilo corporativo para el encabezado del reporte
+            title_style = ParagraphStyle(
+                'DocTitle', 
+                parent=styles['Heading1'], 
+                fontSize=18, 
+                textColor=colors.HexColor("#0A84FF"),
+                spaceAfter=15
+            )
+            story.append(Paragraph("NPI Quality Control Intelligence - Production Report", title_style))
+            story.append(Spacer(1, 10))
+
+            # Construcción de la matriz de datos para ReportLab
+            table_data = [["Serial No", "Station", "Test", "Result", "Timestamp"]]
+            for row in self.records:
+                # Mapeo de columnas: Serial, Station, Test, Result, Timestamp
+                table_data.append([row[0], row[1], row[2], row[3], row[4]])
+
+            pdf_table = Table(table_data)
+            pdf_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#131318")),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                ('FONTSIZE', (0, 0), (-1, -1), 9)
+            ]))
+            
+            story.append(pdf_table)
+            doc.build(story)
+            
+            messagebox.showinfo("Éxito", f"Informe PDF ejecutivo generado correctamente en:\n{file_path}")
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo generar el archivo PDF: {e}")
+
+
+    # ======================================================
+    # MÉTRICAS ANALÍTICAS Y RENDERIZADO DE GRÁFICAS
+    # ======================================================
+
+    def update_dashboard_metrics(self, total_pass, total_fail):
+        """Calcula y actualiza las métricas numéricas de las tarjetas ejecutivas."""
+        total_records = total_pass + total_fail
+        yield_rate = 0.0
+        if total_records > 0:
+            yield_rate = round((total_pass / total_records) * 100, 2)
+
+        # Inyección de texto en las etiquetas de la interfaz
+        self.lbl_card_total_val.config(text=str(total_records))
+        self.lbl_card_yield_val.config(text=f"{yield_rate}%")
+        self.lbl_card_pass_val.config(text=str(total_pass))
+        self.lbl_card_fail_val.config(text=str(total_fail))
+
+    def refresh_chart(self, total_pass, total_fail):
+        """Redibuja de forma dinámica la gráfica de barras de Matplotlib."""
+        self.ax.clear()
+        
+        t = self.themes["dark" if self.dark_mode else "light"]
+        
+        # Configuración estética de la gráfica según el tema
+        self.fig.patch.set_facecolor(t["surface"])
+        self.ax.set_facecolor(t["surface_2"])
+        
+        categories = ["Pass (OK)", "Fail (FAIL)"]
+        values = [total_pass, total_fail]
+        bar_colors = [t["success"], t["danger"]]
+
+        bars = self.ax.barh(categories, values, color=bar_colors, height=0.55)
+        
+        self.ax.tick_params(colors=t["text"], labelsize=9)
+        self.ax.spines['top'].set_visible(False)
+        self.ax.spines['right'].set_visible(False)
+        self.ax.spines['left'].set_color(t["border"])
+        self.ax.spines['bottom'].set_color(t["border"])
+        self.ax.grid(axis='x', color=t["border"], linestyle='--', alpha=0.5)
+
+        # Añadir etiquetas de cantidad al final de cada barra
+        for bar in bars:
+            width = bar.get_width()
+            self.ax.text(
+                width + (max(values)*0.02 if max(values) > 0 else 0.1),
+                bar.get_y() + bar.get_height()/2,
+                f'{int(width)}',
+                va='center', ha='left',
+                color=t["text"], fontweight='bold', fontsize=9
+            )
+
+        self.fig.tight_layout()
+        self.canvas_plot.draw()
+
+    # ======================================================
+    # FILTRADO DE INTERFAZ Y MANEJO DE TEMAS VISUALES
+    # ======================================================
+
+    def filter_records(self):
+        """Realiza un filtrado dinámico local en el Treeview por texto o estatus."""
+        search_txt = self.search_var.get().upper()
+        status_filter = self.cmb_status.get()
+        
+        # Limpiar Treeview
+        for row in self.tree.get_children():
+            self.tree.delete(row)
+
+        for row in self.records:
+            # row = Serial, row = Station, row = Result
+            match_text = search_txt in str(row[0]).upper() or search_txt in str(row[1]).upper()
+            match_status = True
+            
+            if status_filter != "Todos" and status_filter != "All" and status_filter != "":
+                if status_filter in ["Pass", "OK"] and row[3] != "OK": match_status = False
+                if status_filter in ["Fail", "FAIL"] and row[3] != "FAIL": match_status = False
+
+            if match_text and match_status:
+                self.tree.insert("", "end", values=row)
+
+    def apply_theme(self, init=False):
+        """Aplica la paleta de colores del tema seleccionado a todos los widgets."""
+        t = self.themes["dark" if self.dark_mode else "light"]
+        
+        # Estilos globales para componentes nativos ttk
+        self.style.configure(".", background=t["window"], foreground=t["text"])
+        self.style.configure("Treeview", background=t["surface"], foreground=t["text"], fieldbackground=t["surface"], bordercolor=t["border"], rowheight=26)
+        self.style.configure("Treeview.Heading", background=t["surface_2"], foreground=t["text"], font=("Segoe UI", 9, "bold"))
+        self.style.map("Treeview", background=[("selected", t["selected"])])
+        
+        # Colorear contenedores principales
+        self.root.config(bg=t["window"])
+        self.app.config(bg=t["window"])
+        self.header.config(bg=t["window"])
+        self.title_container.config(bg=t["window"])
+        self.header_buttons.config(bg=t["window"])
+        self.sidebar.config(bg=t["surface"], bd=1, relief="solid", highlightbackground=t["border"])
+        self.main_container.config(bg=t["window"])
+        self.cards_frame.config(bg=t["window"])
+        self.search_frame.config(bg=t["surface"], bd=1, relief="solid")
+        self.table_frame.config(bg=t["window"])
+        self.chart_frame.config(bg=t["window"])
+
+        # Colorear etiquetas y campos de texto
+        labels = [self.lbl_title, self.lbl_subtitle, self.lbl_controls, self.lbl_date_range, self.lbl_start, self.lbl_end, self.lbl_table_title, self.lbl_chart_title, self.lbl_filter_status]
+        for lbl in labels: lbl.config(bg=lbl.master.cget("bg"), fg=t["text"])
+        
+        self.lbl_subtitle.config(fg=t["muted"])
+        self.lbl_date_range.config(fg=t["muted"])
+        self.txt_search.config(bg=t["surface"], fg=t["text"], insertbackground=t["text"])
+
+        # Colorear tarjetas de métricas
+        self.card_total.config(bg=t["card"], bd=1, relief="solid")
+        self.card_yield.config(bg=t["card"], bd=1, relief="solid")
+        self.card_pass.config(bg=t["card"], bd=1, relief="solid")
+        self.card_fail.config(bg=t["card"], bd=1, relief="solid")
+        
+        for c_lbl in [self.lbl_card_total_title, self.lbl_card_total_val, self.lbl_card_yield_title, self.lbl_card_yield_val, self.lbl_card_pass_title, self.lbl_card_pass_val, self.lbl_card_fail_title, self.lbl_card_fail_val]:
+            c_lbl.config(bg=c_lbl.master.cget("bg"), fg=t["text"])
+            
+        self.lbl_card_pass_val.config(fg=t["success"])
+        self.lbl_card_fail_val.config(fg=t["danger"])
+
+        # Colorear botones de la barra lateral
+        buttons_primary = [self.btn_scan, self.btn_live]
+        for btn in buttons_primary: btn.config(bg=t["accent"], fg="#FFFFFF", activebackground=t["accent_hover"], activeforeground="#FFFFFF")
+        
+        buttons_sec = [self.btn_lang, self.btn_theme, self.btn_reset, self.btn_delete, self.btn_export_csv, self.btn_export_pdf]
+        for btn in buttons_sec: btn.config(bg=t["button_secondary"], fg=t["text"], activebackground=t["button_secondary_hover"], activeforeground=t["text"])
+
+        # Forzar redibujado de la gráfica
+        if not init and self.records is not None:
+            self.filter_records()
+            # Contar de nuevo para refrescar la gráfica con los colores correctos
+            p = sum(1 for r in self.records if r[3] == "OK")
+            f = sum(1 for r in self.records if r[3] == "FAIL")
+            self.refresh_chart(p, f)
+
+    # ======================================================
+    # STUBS / FUNCIONES DE CONTROL ACCESORIAS
+    # ======================================================
+
+    def update_ui_text(self):
+        """Actualiza todos los textos de la interfaz según el idioma activo."""
+        ld = self.lang_dict[self.current_lang]
+        self.lbl_title.config(text=ld["title"])
+        self.lbl_subtitle.config(text=ld["subtitle"])
+        self.lbl_controls.config(text=ld["controls"])
+        self.lbl_date_range.config(text=ld["date_range"])
+        self.lbl_start.config(text=ld["start_date"])
+        self.lbl_end.config(text=ld["end_date"])
+        self.btn_scan.config(text=ld["scan"])
+        self.btn_live.config(text=ld["live_on"] if self.live_mode else ld["live_off"])
+        self.btn_reset.config(text=ld["reset_db"])
+        self.btn_delete.config(text=ld["delete"])
+        self.btn_export_csv.config(text=ld["export_csv"])
+        self.btn_export_pdf.config(text=ld["export_pdf"])
+        self.lbl_card_total_title.config(text=ld["records"].upper())
+        self.lbl_card_yield_title.config(text=ld["yield"].upper())
+        self.lbl_card_pass_title.config(text=ld["pass"].upper())
+        self.lbl_card_fail_title.config(text=ld["fail"].upper())
+        self.lbl_filter_status.config(text=ld["status"])
+        self.lbl_table_title.config(text=ld["table_title"])
+        self.lbl_chart_title.config(text=ld["chart_title"])
+        
+        self.cmb_status.config(values=[ld["all"], ld["pass"], ld["fail"]])
+        self.cmb_status.current(0)
+        
+        # Mapeo manual directo a los índices declarados en el Bloque 5
+        # Esto elimina por completo el error del índice 'model'
+        self.tree.heading("serial", text=ld["serial"])
+        self.tree.heading("station", text=ld["model"]) 
+        self.tree.heading("test", text=ld["test"])
+        self.tree.heading("result", text=ld["result"])
+        self.tree.heading("timestamp", text=ld["datetime"])
+        self.tree.heading("user", text=ld["user"])
+
+
+        ld = self.lang_dict[self.current_lang]
+        self.lbl_title.config(text=ld["title"])
+        self.lbl_subtitle.config(text=ld["subtitle"])
+        self.lbl_controls.config(text=ld["controls"])
+        self.lbl_date_range.config(text=ld["date_range"])
+        self.lbl_start.config(text=ld["start_date"])
+        self.lbl_end.config(text=ld["end_date"])
+        self.btn_scan.config(text=ld["scan"])
+        self.btn_live.config(text=ld["live_on"] if self.live_mode else ld["live_off"])
+        self.btn_reset.config(text=ld["reset_db"])
+        self.btn_delete.config(text=ld["delete"])
+        self.btn_export_csv.config(text=ld["export_csv"])
+        self.btn_export_pdf.config(text=ld["export_pdf"])
+        self.lbl_card_total_title.config(text=ld["records"].upper())
+        self.lbl_card_yield_title.config(text=ld["yield"].upper())
+        self.lbl_card_pass_title.config(text=ld["pass"].upper())
+        self.lbl_card_fail_title.config(text=ld["fail"].upper())
+        self.lbl_filter_status.config(text=ld["status"])
+        self.lbl_table_title.config(text=ld["table_title"])
+        self.lbl_chart_title.config(text=ld["chart_title"])
+        
+        self.cmb_status.config(values=[ld["all"], ld["pass"], ld["fail"]])
+        self.cmb_status.current(0)
+        
+        # Mapeo exacto con las columnas declaradas en la UI (Bloque 5)
+        self.tree.heading("serial", text=ld["serial"])
+        self.tree.heading("station", text=ld["model"])  # Muestra 'Modelo' en la columna intermedia de Oracle
+        self.tree.heading("test", text=ld["test"])
+        self.tree.heading("result", text=ld["result"])
+        self.tree.heading("timestamp", text=ld["datetime"])
+        self.tree.heading("user", text=ld["user"])
+
+        """Actualiza todos los textos de la interfaz según el idioma activo."""
+        ld = self.lang_dict[self.current_lang]
+        self.lbl_title.config(text=ld["title"])
+        self.lbl_subtitle.config(text=ld["subtitle"])
+        self.lbl_controls.config(text=ld["controls"])
+        self.lbl_date_range.config(text=ld["date_range"])
+        self.lbl_start.config(text=ld["start_date"])
+        self.lbl_end.config(text=ld["end_date"])
+        self.btn_scan.config(text=ld["scan"])
+        self.btn_live.config(text=ld["live_on"] if self.live_mode else ld["live_off"])
+        self.btn_reset.config(text=ld["reset_db"])
+        self.btn_delete.config(text=ld["delete"])
+        self.btn_export_csv.config(text=ld["export_csv"])
+        self.btn_export_pdf.config(text=ld["export_pdf"])
+        self.lbl_card_total_title.config(text=ld["records"].upper())
+        self.lbl_card_yield_title.config(text=ld["yield"].upper())
+        self.lbl_card_pass_title.config(text=ld["pass"].upper())
+        self.lbl_card_fail_title.config(text=ld["fail"].upper())
+        self.lbl_filter_status.config(text=ld["status"])
+        self.lbl_table_title.config(text=ld["table_title"])
+        self.lbl_chart_title.config(text=ld["chart_title"])
+        
+        self.cmb_status.config(values=[ld["all"], ld["pass"], ld["fail"]])
+        self.cmb_status.current(0)
+        
+        # Mapeo manual directo a los identificadores del Treeview sin bucles
+        self.tree.heading("serial", text=ld["serial"])
+        self.tree.heading("station", text=ld["model"]) 
+        self.tree.heading("test", text=ld["test"])
+        self.tree.heading("result", text=ld["result"])
+        self.tree.heading("timestamp", text=ld["datetime"])
+        self.tree.heading("user", text=ld["user"])
+
+        
+           
+
+    def toggle_lang(self):
+        self.current_lang = "ENG" if self.current_lang == "ESP" else "ESP"
+        self.btn_lang.config(text=self.current_lang)
+        self.update_ui_text()
+
+    def toggle_theme(self):
+        self.dark_mode = not self.dark_mode
+        self.btn_theme.config(text="☀️" if self.dark_mode else "🌙")
+        self.apply_theme()
+
+    def toggle_live_mode(self):
+        self.live_mode = not self.live_mode
+        ld = self.lang_dict[self.current_lang]
+        self.btn_live.config(text=ld["live_on"] if self.live_mode else ld["live_off"])
+
+    def run_live_loop(self):
+        if self.live_mode: self.load_data()
+        self.root.after(5000, self.run_live_loop) # Monitoreo automático cada 5 segundos
+
+    def reset_local_db(self): pass
+    def delete_selected_record(self): pass
+
+
+# ======================================================
+# PUNTO DE ARRANQUE OFICIAL DE LA APLICACIÓN
+# ======================================================
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = NPIApp(root)
+    root.mainloop()
