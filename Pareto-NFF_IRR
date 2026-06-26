@@ -1,0 +1,949 @@
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+import sqlite3
+import os
+import re
+import json
+import glob
+import csv
+import datetime
+import getpass
+import threading
+import configparser
+
+# Conector nativo de alto rendimiento para base de datos Oracle
+import oracledb
+
+from tkcalendar import DateEntry
+
+# Componentes de ReportLab para la generación de reportes ejecutivos con gráficas
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+
+import matplotlib
+matplotlib.use("TkAgg")
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
+
+
+def check_and_create_config():
+    """Genera automáticamente el archivo de configuración si no existe para proteger credenciales."""
+    config_file = "config.ini"
+    config = configparser.ConfigParser()
+    
+    if not os.path.exists(config_file):
+        config["DATABASE"] = {
+            "host": "10.235.5.11",
+            "port": "1521",
+            "service_name": "pmxesdb1",
+            "user": "PMXERS_RPT",
+            "password": "rptPMX$2310"
+        }
+        with open(config_file, "w") as configfile:
+            config.write(configfile)
+            
+    config.read(config_file)
+    return config["DATABASE"]
+
+
+class LogParserEngine:
+    """Motor analítico para parseo de logs con JSON embebido (Compatibilidad Local)."""
+
+    @staticmethod
+    def parse_file(file_path):
+        serial, model, test = None, None, None
+        result, dt = "Fail", None
+
+        ts_re = re.compile(r"^\[(?P<dt>\d{4}-\d{2}-\d{2})T(?P<t>\d{2}:\d{2}:\d{2})")
+        js_re = re.compile(r"-\s+(\{.*ProductName.*SerialNumber.*\})")
+
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+                f.seek(0)
+
+                for line in f:
+                    if not dt:
+                        ts_m = ts_re.match(line)
+                        if ts_m:
+                            dt = f"{ts_m.group('dt')} {ts_m.group('t')}"
+
+                    if "Starting CrewReprovision..." in line:
+                        test = "Provision"
+                    elif "Starting CrewDevicePrep..." in line:
+                        test = "DevicePrep"
+
+                    js_m = js_re.search(line)
+                    if js_m:
+                        try:
+                            d = json.loads(js_m.group(1))
+                            serial = d.get("SerialNumber") or d.get("SystemDutSn")
+                            model = d.get("ProductName") or d.get("Project")
+                        except Exception:
+                            pass
+
+            if "Starting CrewReprovision..." in content or "Starting CrewDevicePrep..." in content:
+                if "Success" in content:
+                    result = "Pass"
+
+        except Exception as e:
+            print(f"Error parseando {file_path}: {e}")
+
+        return serial, model, test, result, dt
+
+
+class NPIApp:
+    """NPI Quality Control Intelligence - Edición Avanzada con Doble Gráfica Analítica."""
+
+    def __init__(self, root):
+        self.root = root
+        self.root.title("NPI Quality Control Intelligence")
+        self.root.geometry("1220x860")
+        self.root.minsize(1100, 780)
+        self.root.resizable(True, True)
+
+        self.current_lang = "ESP"
+        self.dark_mode = False  # FIJO: Bloqueado permanentemente en Modo Claro ☀️
+        self.records = []       # Almacenará diccionarios estructurados para consultas
+        self.top_failures = []  # Estaciones con mayor volumen de fallas (Datos de Pareto)
+        
+        # Elementos para los lienzos de Matplotlib (Desacoplados e independientes)
+        self.canvas_plot = None
+        self.canvas_pareto = None
+        
+        self.log_directory = r"C:\PruebasLogs"
+        
+        # El sistema arranca automáticamente recolectando datos en tiempo real cada 30s
+        self.live_mode = True
+        self.is_scanning = False
+
+        # Cargar de forma segura los parámetros de red e IP guardados externamente
+        self.db_config = check_and_create_config()
+
+        self.init_database()
+
+        self.themes = {
+            "light": {
+                "window": "#F5F5F7", "surface": "#FFFFFF", "surface_2": "#F2F2F7",
+                "card": "#FFFFFF", "card_2": "#FAFAFC", "border": "#D8D8E0",
+                "text": "#1D1D1F", "muted": "#6E6E73", "muted_2": "#8E8E93",
+                "accent": "#007AFF", "accent_hover": "#0066CC", 
+                "success": "#34C759", "success_bg": "#EAF8EF",
+                "danger": "#FF3B30", "danger_bg": "#FDECEC",
+                "warning": "#FF9500", "warning_bg": "#FFF4E5",
+                "entry": "#FFFFFF", "selected": "#007AFF",
+                "button_secondary": "#EFEFF4", "button_secondary_hover": "#E5E5EA"
+            },
+            "dark": {  # Mantenido estrictamente para preservar compatibilidad de funciones
+                "window": "#F5F5F7", "surface": "#FFFFFF", "surface_2": "#F2F2F7",
+                "card": "#FFFFFF", "card_2": "#FAFAFC", "border": "#D8D8E0",
+                "text": "#1D1D1F", "muted": "#6E6E73", "muted_2": "#8E8E93",
+                "accent": "#007AFF", "accent_hover": "#0066CC", 
+                "success": "#34C759", "success_bg": "#EAF8EF",
+                "danger": "#FF3B30", "danger_bg": "#FDECEC",
+                "warning": "#FF9500", "warning_bg": "#FFF4E5",
+                "entry": "#FFFFFF", "selected": "#007AFF",
+                "button_secondary": "#EFEFF4", "button_secondary_hover": "#E5E5EA"
+            }
+        }
+
+
+        self.lang_dict = {
+            "ESP": {
+                "title": "NPI Quality Control Intelligence",
+                "subtitle": "Inteligencia automatizada para logs, yield, fallas y control de calidad",
+                "controls": "Controles", "date_range": "Rango de fechas",
+                "start_date": "Fecha inicio", "end_date": "Fecha fin",
+                "scan": "Refresh Panel", "live_off": "Modo en vivo: OFF",
+                "live_on": "Modo en vivo: ON", "export_pdf": "Generar PDF", 
+                "records": "Registros", "yield": "Yield", "pass": "Pass", "fail": "Fail",
+                "search": "Buscar por serial o estación...", "status": "Estatus",
+                "all": "Todos", "table_title": "Inspection records",
+                "chart_title": "Result distribution", "serial": "Serial",
+                "model": "Station", "test": "Prueba", "result": "Resultado",
+                "datetime": "Timestamp", "user": "Operator",
+                "log_not_found": "No se encontró archivo de log para:",
+                "scanner_empty": "No se encontraron registros en el rango seleccionado.",
+                "scanner_done": "Carga finalizada. Registros añadidos:",
+                "path_missing": "Ruta no encontrada:",
+                "pareto_title": "Gráfica de Pareto Analítica (Causa Raíz)"
+            },
+            "ENG": {
+                "title": "NPI Quality Control Intelligence",
+                "subtitle": "Automated intelligence for logs, yield, failures and quality control",
+                "controls": "Controls", "date_range": "Date range",
+                "start_date": "Start date", "end_date": "End date",
+                "scan": "Refresh Panel", "live_off": "Live mode: OFF",
+                "live_on": "Live mode: ON", "export_pdf": "Generate PDF",
+                "records": "Records", "yield": "Yield", "pass": "Pass", "fail": "Fail",
+                "search": "Search by serial or station...", "status": "Status",
+                "all": "All", "table_title": "Inspection records",
+                "chart_title": "Result distribution", "serial": "Serial",
+                "model": "Station", "test": "Test", "result": "Result",
+                "datetime": "Timestamp", "user": "Operator",
+                "log_not_found": "No log file found for:",
+                "scanner_empty": "No logs found in the selected range.",
+                "scanner_done": "Scan completed. Records added:",
+                "path_missing": "Path not found:",
+                "pareto_title": "Analytical Pareto Chart (Root Cause)"
+            }
+        }
+
+        self.style = ttk.Style()
+        self.style.theme_use("clam")
+
+        self.build_ui()
+        self.update_ui_text()
+        self.apply_theme(init=True)
+        
+        # Sincronización con Windows para pintar la app al instante
+        self.root.update()
+        
+        self.start_async_load(is_automated=True)
+        self.run_live_loop()
+
+    def init_database(self):
+        """Conexión local SQLite para almacenamiento en caché de contingencia."""
+        self.conn = sqlite3.connect("npi_automated_quality.db")
+        self.cursor_local = self.conn.cursor()
+        self.cursor_local.execute("""
+            CREATE TABLE IF NOT EXISTS server_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                serial TEXT NOT NULL,
+                model TEXT NOT NULL,
+                test TEXT NOT NULL,
+                result TEXT NOT NULL,
+                datetime TEXT NOT NULL,
+                user TEXT NOT NULL,
+                UNIQUE(serial, datetime)
+            )
+        """)
+        self.conn.commit()
+
+
+    def build_ui(self):
+        """Maquetación de la UI tipo macOS con la barra lateral limpia y sin botón de tema."""
+        self.root.grid_rowconfigure(0, weight=1)
+        self.root.grid_columnconfigure(0, weight=1)
+
+        self.app = tk.Frame(self.root)
+        self.app.grid(row=0, column=0, sticky="nsew")
+        self.app.grid_rowconfigure(1, weight=1)
+        self.app.grid_columnconfigure(1, weight=1)
+
+        # HEADER (Encabezado de la App)
+        self.header = tk.Frame(self.app, height=86)
+        self.header.grid(row=0, column=0, columnspan=2, sticky="ew", padx=30, pady=(22, 12))
+        self.header.grid_columnconfigure(0, weight=1)
+        self.header.grid_propagate(False)
+
+        self.title_container = tk.Frame(self.header)
+        self.title_container.grid(row=0, column=0, sticky="w")
+
+        self.lbl_title = tk.Label(self.title_container, font=("Segoe UI", 22, "bold"), anchor="w")
+        self.lbl_title.pack(anchor="w")
+
+        self.lbl_subtitle = tk.Label(self.title_container, font=("Segoe UI", 10), anchor="w")
+        self.lbl_subtitle.pack(anchor="w", pady=(4, 0))
+
+        self.header_buttons = tk.Frame(self.header)
+        self.header_buttons.grid(row=0, column=1, sticky="e")
+
+        self.btn_lang = tk.Button(self.header_buttons, font=("Segoe UI", 9, "bold"), bd=0, cursor="hand2", padx=16, pady=9, command=self.toggle_lang)
+        self.btn_lang.pack(side="left")
+
+        # SIDEBAR (Barra de Controles Lateral Izquierda Optimizada)
+        self.sidebar = tk.Frame(self.app, width=300)
+        self.sidebar.grid(row=1, column=0, sticky="nsw", padx=(30, 12), pady=(0, 28))
+        self.sidebar.grid_propagate(False)
+
+        self.lbl_controls = tk.Label(self.sidebar, font=("Segoe UI", 14, "bold"), anchor="w")
+        self.lbl_controls.pack(fill="x", padx=22, pady=(22, 18))
+
+        self.lbl_date_range = tk.Label(self.sidebar, font=("Segoe UI", 9, "bold"), anchor="w")
+        self.lbl_date_range.pack(fill="x", padx=22, pady=(0, 14))
+
+        self.lbl_start = tk.Label(self.sidebar, font=("Segoe UI", 9), anchor="w")
+        self.lbl_start.pack(fill="x", padx=22, pady=(0, 5))
+
+        self.date_start = DateEntry(self.sidebar, date_pattern="yyyy-mm-dd", font=("Segoe UI", 10), borderwidth=0)
+        self.date_start.pack(fill="x", padx=22, ipady=6, pady=(0, 16))
+
+        self.lbl_end = tk.Label(self.sidebar, font=("Segoe UI", 9), anchor="w")
+        self.lbl_end.pack(fill="x", padx=22, pady=(0, 5))
+
+        self.date_end = DateEntry(self.sidebar, date_pattern="yyyy-mm-dd", font=("Segoe UI", 10), borderwidth=0)
+        self.date_end.pack(fill="x", padx=22, ipady=6, pady=(0, 22))
+
+        # El cambio de fechas activa la carga asíncrona segura sin congelar la app
+        self.date_start.bind("<<DateEntrySelected>>", lambda e: self.start_async_load(is_automated=True))
+        self.date_end.bind("<<DateEntrySelected>>", lambda e: self.start_async_load(is_automated=True))
+
+        self.btn_scan = tk.Button(self.sidebar, bd=0, font=("Segoe UI", 10, "bold"), cursor="hand2", pady=12, command=lambda: self.start_async_load(is_automated=False))
+        self.btn_scan.pack(fill="x", padx=22, pady=(0, 10))
+
+        self.btn_live = tk.Button(self.sidebar, bd=0, font=("Segoe UI", 10, "bold"), cursor="hand2", pady=12, command=self.toggle_live_mode)
+        self.btn_live.pack(fill="x", padx=22, pady=(0, 18))
+
+        self.progress = ttk.Progressbar(self.sidebar, orient="horizontal", mode="determinate")
+        self.progress.pack(fill="x", padx=22, pady=(0, 24))
+
+        self.sidebar_line = tk.Frame(self.sidebar, height=1)
+        self.sidebar_line.pack(fill="x", padx=22, pady=(0, 20))
+
+        self.btn_export_pdf = tk.Button(
+            self.sidebar, 
+            bd=0, 
+            font=("Segoe UI", 10, "bold"), 
+            cursor="hand2", 
+            pady=12, 
+            command=self.export_to_pdf
+        )
+        self.btn_export_pdf.pack(fill="x", padx=22)
+
+                # AREA CENTRAL DE CONTENIDO
+        self.main_container = tk.Frame(self.app)
+        self.main_container.grid(row=1, column=1, sticky="nsew", padx=(12, 30), pady=(0, 28))
+        self.main_container.grid_rowconfigure(2, weight=1)
+        self.main_container.grid_columnconfigure(0, weight=1)
+
+        # CARDS SUPERIORES DE MÉTRICAS
+        self.cards_frame = tk.Frame(self.main_container)
+        self.cards_frame.grid(row=0, column=0, sticky="ew", pady=(0, 16))
+        for i in range(4):
+            self.cards_frame.grid_columnconfigure(i, weight=1)
+
+        self.card_total = tk.Frame(self.cards_frame, height=94)
+        self.card_total.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self.card_total.pack_propagate(False)
+        self.lbl_card_total_title = tk.Label(self.card_total, font=("Segoe UI", 9, "bold"), anchor="w")
+        self.lbl_card_total_title.pack(fill="x", padx=16, pady=(12, 2))
+        self.lbl_card_total_val = tk.Label(self.card_total, text="0", font=("Segoe UI", 24, "bold"), anchor="w")
+        self.lbl_card_total_val.pack(fill="x", padx=16)
+
+        self.card_yield = tk.Frame(self.cards_frame, height=94)
+        self.card_yield.grid(row=0, column=1, sticky="ew", padx=4)
+        self.card_yield.pack_propagate(False)
+        self.lbl_card_yield_title = tk.Label(self.card_yield, font=("Segoe UI", 9, "bold"), anchor="w")
+        self.lbl_card_yield_title.pack(fill="x", padx=16, pady=(12, 2))
+        self.lbl_card_yield_val = tk.Label(self.card_yield, text="0.0%", font=("Segoe UI", 24, "bold"), anchor="w")
+        self.lbl_card_yield_val.pack(fill="x", padx=16)
+
+        self.card_pass = tk.Frame(self.cards_frame, height=94)
+        self.card_pass.grid(row=0, column=2, sticky="ew", padx=4)
+        self.card_pass.pack_propagate(False)
+        self.lbl_card_pass_title = tk.Label(self.card_pass, font=("Segoe UI", 9, "bold"), anchor="w")
+        self.lbl_card_pass_title.pack(fill="x", padx=16, pady=(12, 2))
+        self.lbl_card_pass_val = tk.Label(self.card_pass, text="0", font=("Segoe UI", 24, "bold"), anchor="w")
+        self.lbl_card_pass_val.pack(fill="x", padx=16)
+
+        self.card_fail = tk.Frame(self.cards_frame, height=94)
+        self.card_fail.grid(row=0, column=3, sticky="ew", padx=(8, 0))
+        self.card_fail.pack_propagate(False)
+        self.lbl_card_fail_title = tk.Label(self.card_fail, font=("Segoe UI", 9, "bold"), anchor="w")
+        self.lbl_card_fail_title.pack(fill="x", padx=16, pady=(12, 2))
+        self.lbl_card_fail_val = tk.Label(self.card_fail, text="0", font=("Segoe UI", 24, "bold"), anchor="w")
+        self.lbl_card_fail_val.pack(fill="x", padx=16)
+
+        # BARRA DE FILTRADO, BÚSQUEDA Y SELECCIÓN DE UNIDAD DE NEGOCIO (BU)
+        self.search_frame = tk.Frame(self.main_container, height=54)
+        self.search_frame.grid(row=1, column=0, sticky="ew", pady=(0, 16))
+        self.search_frame.grid_columnconfigure(0, weight=1)
+        self.search_frame.grid_propagate(False)
+
+        self.search_var = tk.StringVar()
+        self.search_var.trace_add("write", lambda *a: self.filter_records())
+        self.txt_search = tk.Entry(self.search_frame, textvariable=self.search_var, font=("Segoe UI", 10), bd=0)
+        self.txt_search.grid(row=0, column=0, sticky="ew", padx=16, pady=13)
+
+        self.lbl_filter_status = tk.Label(self.search_frame, font=("Segoe UI", 9, "bold"))
+        self.lbl_filter_status.grid(row=0, column=1, padx=(16, 8), pady=13)
+
+        self.cmb_status = ttk.Combobox(self.search_frame, font=("Segoe UI", 10), state="readonly", width=10)
+        self.cmb_status.grid(row=0, column=2, padx=(0, 16), pady=11)
+        self.cmb_status.bind("<<ComboboxSelected>>", lambda e: self.filter_records())
+
+        self.lbl_filter_bu = tk.Label(self.search_frame, text="BU", font=("Segoe UI", 9, "bold"))
+        self.lbl_filter_bu.grid(row=0, column=3, padx=(16, 8), pady=13)
+
+        self.cmb_bu = ttk.Combobox(self.search_frame, font=("Segoe UI", 10), state="readonly", width=8)
+        self.cmb_bu.grid(row=0, column=4, padx=(0, 16), pady=11)
+        self.cmb_bu["values"] = ["SUR", "NFF", "IRR"]
+        self.cmb_bu.current(0)
+        self.cmb_bu.bind("<<ComboboxSelected>>", lambda e: self.start_async_load(is_automated=True))
+
+        # TABLA DE REGISTROS PRINCIPAL (Treeview)
+        self.table_frame = tk.Frame(self.main_container)
+        self.table_frame.grid(row=2, column=0, sticky="nsew", pady=(0, 16))
+        self.table_frame.grid_rowconfigure(1, weight=1)
+        self.table_frame.grid_columnconfigure(0, weight=1)
+
+        self.lbl_table_title = tk.Label(self.table_frame, font=("Segoe UI", 12, "bold"), anchor="w")
+        self.lbl_table_title.grid(row=0, column=0, sticky="w", padx=4, pady=(0, 10))
+
+        columns = ("serial", "station", "test", "result", "timestamp", "user")
+        self.tree = ttk.Treeview(self.table_frame, columns=columns, show="headings", selectmode="browse")
+        self.tree.grid(row=1, column=0, sticky="nsew")
+
+        self.scrollbar = ttk.Scrollbar(self.table_frame, orient="vertical", command=self.tree.yview)
+        self.scrollbar.grid(row=1, column=1, sticky="ns")
+        self.tree.configure(yscrollcommand=self.scrollbar.set)
+
+        # SECCIÓN INFERIOR COMPARTIDA: CONTENEDOR DOBLE DE GRÁFICAS (Distribución + Pareto)
+        self.charts_row_frame = tk.Frame(self.main_container)
+        self.charts_row_frame.grid(row=3, column=0, sticky="ew")
+        self.charts_row_frame.grid_columnconfigure(0, weight=1)
+        self.charts_row_frame.grid_columnconfigure(1, weight=1)
+
+        # Contenedor Gráfica 1: Distribución Resultados
+        self.chart_frame = tk.Frame(self.charts_row_frame)
+        self.chart_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        self.chart_frame.grid_rowconfigure(1, weight=1)
+        self.chart_frame.grid_columnconfigure(0, weight=1)
+
+        self.lbl_chart_title = tk.Label(self.chart_frame, font=("Segoe UI", 12, "bold"), anchor="w")
+        self.lbl_chart_title.grid(row=0, column=0, sticky="w", padx=4, pady=(0, 6))
+
+        # Contenedor Gráfica 2: Nueva Gráfica Industrial de Pareto
+        self.pareto_frame = tk.Frame(self.charts_row_frame)
+        self.pareto_frame.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        self.pareto_frame.grid_rowconfigure(1, weight=1)
+        self.pareto_frame.grid_columnconfigure(0, weight=1)
+        
+        self.lbl_pareto_title = tk.Label(self.pareto_frame, font=("Segoe UI", 12, "bold"), anchor="w")
+        self.lbl_pareto_title.grid(row=0, column=0, sticky="w", padx=4, pady=(0, 6))
+
+
+                # Inicialización de la figura para Distribución de Resultados
+        self.fig = Figure(figsize=(5, 2.0), dpi=100)
+        self.ax = self.fig.add_subplot(111)
+        self.canvas_plot = FigureCanvasTkAgg(self.fig, master=self.chart_frame)
+        self.canvas_plot.get_tk_widget().grid(row=1, column=0, sticky="ew", pady=(0, 4))
+
+        # Inicialización de la figura para el Diagrama de Pareto Industrial
+        self.fig_pareto = Figure(figsize=(5, 2.0), dpi=100)
+        self.ax_pareto_bars = self.fig_pareto.add_subplot(111)
+        self.canvas_pareto = FigureCanvasTkAgg(self.fig_pareto, master=self.pareto_frame)
+        self.canvas_pareto.get_tk_widget().grid(row=1, column=0, sticky="ew", pady=(0, 4))
+
+    # ======================================================
+    # ARQUITECTURA ASÍNCRONA MULTIHILO CON PROCESAMIENTO PARETO
+    # ======================================================
+
+    def start_async_load(self, is_automated=False):
+        """Dispara la consulta en segundo plano liberando los filtros y botones en caliente."""
+        if self.is_scanning:
+            return 
+            
+        self.is_scanning = True
+        
+        if not is_automated:
+            self.btn_scan.config(state="disabled", text="Cargando..." if self.current_lang == "ESP" else "Loading...")
+            self.progress.start(10)
+        
+        t = threading.Thread(target=self.load_data_thread, args=(is_automated,), daemon=True)
+        t.start()
+
+    def load_data_thread(self, is_automated):
+        """Consulta remota multinivel con transformación nativa a diccionarios de datos."""
+        estaciones_por_bu = {
+            "SUR": ['MSRSFPREPARE', 'MSRSFPREPARE2', 'MSRSFFCT', 'MSRSFFCT2', 'MSRSFPROVISION'],
+            "NFF": ['MSRSCPREPARE', 'MSRSCFT', 'MSRSCPROVISION'],
+            "IRR": ['MSRIRRPREPARE', 'MSRIRRPREPARE2', 'MSRIRRFCT', 'MSRIRRFCT2', 'MSRIRRFCT3', 'MSRIRRPROVISION']
+        }
+
+        bu_seleccionada = self.cmb_bu.get()
+        lista_estaciones = estaciones_por_bu.get(bu_seleccionada, estaciones_por_bu["SUR"])
+        
+        fecha_ini = self.date_start.get_date().strftime('%Y-%m-%d')
+        fecha_fin = self.date_end.get_date().strftime('%Y-%m-%d')
+
+        mapped_records = []
+        error_msg = None
+
+        try:
+            connection = oracledb.connect(
+                user=self.db_config["user"],
+                password=self.db_config["password"],
+                host=self.db_config["host"],
+                port=int(self.db_config["port"]),
+                service_name=self.db_config["service_name"]
+            )
+            cursor = connection.cursor()
+            
+            placeholders = [f":est{i}" for i in range(len(lista_estaciones))]
+            in_clause = ",".join(placeholders)
+
+            query = f"""
+                SELECT 
+                    SERIAL_NR AS "Serial",
+                    CURR_STATUS AS "Station",
+                    'TEST' AS "Test",
+                    MEMO AS "Result",
+                    TO_CHAR(CT_DATE, 'YYYY-MM-DD HH24:MI:SS') AS "Timestamp",
+                    'Operator' AS "User"
+                FROM ERS.ERS_ITEM_TRACK
+                WHERE CURR_STATUS IN ({in_clause})
+                  AND TRUNC(CT_DATE) BETWEEN TO_DATE(:f_inicio, 'YYYY-MM-DD') AND TO_DATE(:f_fin, 'YYYY-MM-DD')
+                ORDER BY CT_DATE ASC
+            """
+            
+            parametros_query = {f"est{i}": est for i, est in enumerate(lista_estaciones)}
+            parametros_query["f_inicio"] = fecha_ini
+            parametros_query["f_fin"] = fecha_fin
+
+            cursor.execute(query, parametros_query)
+            raw_data = cursor.fetchall()
+
+            for row in raw_data:
+                mapped_records.append({
+                    "Serial": str(row[0]),
+                    "Station": str(row[1]),
+                    "Test": str(row[2]),
+                    "Result": str(row[3]),
+                    "Timestamp": str(row[4]),
+                    "User": str(row[5])
+                })
+
+            cursor.close()
+            connection.close()
+
+        except Exception as e:
+            error_msg = str(e)
+
+        self.root.after(0, lambda: self.finalize_data_load(mapped_records, error_msg, is_automated))
+
+    def finalize_data_load(self, mapped_records, error_msg, is_automated):
+        """Devuelve el control al hilo de ejecución de Tkinter de forma segura."""
+        self.is_scanning = False
+        
+        if not is_automated:
+            self.progress.stop()
+            ld = self.lang_dict[self.current_lang]
+            self.btn_scan.config(state="normal", text=ld["scan"])
+        
+        if error_msg:
+            if not is_automated:
+                messagebox.showerror("Database Error", f"Fallo al conectar con Oracle: {error_msg}")
+            return
+
+        self.records = mapped_records
+        
+        total_pass = sum(1 for r in self.records if r["Result"] == "OK")
+        total_fail = sum(1 for r in self.records if r["Result"] == "FAIL")
+
+        # CÁLCULO DE PARETO: Contar y ordenar fallas agrupadas por estación
+        failure_counts = {}
+        for r in self.records:
+            if r["Result"] == "FAIL":
+                station = r["Station"]
+                failure_counts[station] = failure_counts.get(station, 0) + 1
+        
+        # Ordenar de mayor a menor volumen de fallas
+        self.top_failures = sorted(failure_counts.items(), key=lambda x: x[1], reverse=True)
+
+        self.update_dashboard_metrics(total_pass, total_fail)
+        self.refresh_chart(total_pass, total_fail)
+        self.refresh_pareto_chart() # Renderiza el Diagrama de Pareto Industrial
+        self.filter_records()
+
+
+    # ======================================================
+    # MOTOR DE EXPORTACIÓN EN ALTA DEFINICIÓN A PDF (DOBLE GRÁFICA)
+    # ======================================================
+
+    def export_to_pdf(self):
+        """Genera un informe ejecutivo formal en formato PDF con ambas gráficas integradas."""
+        if not self.records:
+            messagebox.showwarning("Exportar", "No existen registros en pantalla para generar el PDF.")
+            return
+
+        temp_img_dist = "temp_chart_dist.png"
+        temp_img_pareto = "temp_chart_pareto.png"
+        try:
+            file_path = filedialog.asksaveasfilename(
+                defaultextension=".pdf",
+                filetypes=[("Archivos PDF", "*.pdf")]
+            )
+            if not file_path:
+                return
+
+            # Captura y congela ambas figuras de Matplotlib de forma independiente
+            self.fig.savefig(temp_img_dist, dpi=200, facecolor=self.fig.get_facecolor(), edgecolor='none')
+            self.fig_pareto.savefig(temp_img_pareto, dpi=200, facecolor=self.fig_pareto.get_facecolor(), edgecolor='none')
+
+            doc = SimpleDocTemplate(file_path, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
+            styles = getSampleStyleSheet()
+            story = []
+
+            title_style = ParagraphStyle('DocTitle', parent=styles['Heading1'], fontSize=20, textColor=colors.HexColor("#007AFF"), spaceAfter=6)
+            bu_actual = self.cmb_bu.get()
+            fecha_i = self.date_start.get_date().strftime('%Y-%m-%d')
+            fecha_fin_val = self.date_end.get_date().strftime('%Y-%m-%d')
+            
+            story.append(Paragraph(f"NPI Quality Control Intelligence Report", title_style))
+            
+            meta_style = ParagraphStyle('Meta', parent=styles['Normal'], fontSize=10, textColor=colors.HexColor("#6E6E73"))
+            story.append(Paragraph(f"<b>Business Unit:</b> {bu_actual}  |  <b>Range:</b> {fecha_i} to {fecha_fin_val}  |  <b>System Status:</b> Operational", meta_style))
+            story.append(Spacer(1, 15))
+
+            # 1. Gráfica 1: Distribución de Resultados
+            story.append(Paragraph("<b>1. Result Distribution Analysis:</b>", styles['Heading3']))
+            story.append(Spacer(1, 4))
+            story.append(Image(temp_img_dist, width=460, height=184))
+            story.append(Spacer(1, 15))
+
+            # 2. Gráfica 2: Diagrama de Pareto Industrial Acoplado
+            story.append(Paragraph("<b>2. Analytical Pareto Chart (Root Cause Curve):</b>", styles['Heading3']))
+            story.append(Spacer(1, 4))
+            story.append(Image(temp_img_pareto, width=460, height=184))
+            story.append(Spacer(1, 15))
+
+            # 3. Resumen Ejecutivo de Fallas (Tabla Pareto)
+            story.append(Paragraph("<b>3. Pareto Summary Table:</b>", styles['Heading3']))
+            story.append(Spacer(1, 6))
+            
+            pareto_data = [["Rank", "Station / Process Name", "Total Scrap Counts"]]
+            if not self.top_failures:
+                pareto_data.append(["-", "No defects detected in this manufacturing cycle", "0"])
+            else:
+                for idx, (station, count) in enumerate(self.top_failures, 1):
+                    pareto_data.append([f"#{idx}", str(station), f"{count} FAILs"])
+            
+            pareto_table = Table(pareto_data, colWidths=[60, 300, 180])
+            pareto_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#FFF4E5")),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.HexColor("#FF9500")),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('ALIGN', (2, 0), (2, -1), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#D8D8E0")),
+                ('FONTSIZE', (0, 0), (-1, -1), 8.5),
+                ('TOPPADDING', (0, 0), (-1, -1), 4),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+            ]))
+            story.append(pareto_table)
+            story.append(Spacer(1, 20))
+
+            # 4. Listado Histórico (Primeras 500 filas)
+            story.append(Paragraph("<b>4. Detailed Inspection Records (Sample Top 500 rows):</b>", styles['Heading3']))
+            story.append(Spacer(1, 8))
+            
+            table_data = [["Serial No", "Station / Process", "Test Action", "Result Code", "Timestamp"]]
+            for row in self.records[:500]:
+                table_data.append([row["Serial"], row["Station"], row["Test"], row["Result"], row["Timestamp"]])
+
+            pdf_table = Table(table_data, colWidths=[110, 110, 70, 70, 180])
+            pdf_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#F2F2F7")),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.HexColor("#1D1D1F")),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
+                ('TOPPADDING', (0, 1), (-1, -1), 4),
+                ('BOTTOMPADDING', (0, 1), (-1, -1), 4),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#D8D8E0")),
+                ('FONTSIZE', (0, 0), (-1, -1), 8.5),
+                ('TEXTCOLOR', (0, 1), (-1, -1), colors.HexColor("#1D1D1F"))
+            ]))
+            
+            story.append(pdf_table)
+            doc.build(story)
+            
+            # Limpieza de imágenes provisionales
+            for path in [temp_img_dist, temp_img_pareto]:
+                if os.path.exists(path):
+                    os.remove(path)
+                
+            messagebox.showinfo("Éxito", f"¡Informe PDF Gerencial con Pareto y Gráficas generado correctamente!:\n{file_path}")
+            
+        except Exception as e:
+            for path in [temp_img_dist, temp_img_pareto]:
+                if os.path.exists(path):
+                    os.remove(path)
+            messagebox.showerror("Error", f"No se pudo generar el archivo PDF completo: {e}")
+
+
+    # ======================================================
+    # MÉTRICAS ANALÍTICAS Y RENDIMIENTO DE GRÁFICAS DE DOBLE EJE
+    # ======================================================
+
+    def update_dashboard_metrics(self, total_pass, total_fail):
+        """Calcula las métricas y aplica alertas visuales por rangos de color al Yield."""
+        total_records = total_pass + total_fail
+        yield_rate = 0.0
+        if total_records > 0:
+            yield_rate = round((total_pass / total_records) * 100, 2)
+
+        self.lbl_card_total_val.config(text=str(total_records))
+        self.lbl_card_pass_val.config(text=str(total_pass))
+        self.lbl_card_fail_val.config(text=str(total_fail))
+        self.lbl_card_yield_val.config(text=f"{yield_rate}%")
+
+        # CONFIGURACIÓN SEGURO DE ALERTAS POR COLORES (KPI DE PLANTA)
+        t = self.themes["light"]
+        if total_records == 0:
+            self.card_yield.config(bg=t["surface"])
+            self.lbl_card_yield_title.config(bg=t["surface"], fg=t["text"])
+            self.lbl_card_yield_val.config(bg=t["surface"], fg=t["text"])
+        elif yield_rate >= 95.0:
+            self.card_yield.config(bg=t["success_bg"])
+            self.lbl_card_yield_title.config(bg=t["success_bg"], fg=t["success"])
+            self.lbl_card_yield_val.config(bg=t["success_bg"], fg=t["success"])
+        elif yield_rate >= 85.0:
+            self.card_yield.config(bg=t["warning_bg"])
+            self.lbl_card_yield_title.config(bg=t["warning_bg"], fg=t["warning"])
+            self.lbl_card_yield_val.config(bg=t["warning_bg"], fg=t["warning"])
+        else:
+            self.card_yield.config(bg=t["danger_bg"])
+            self.lbl_card_yield_title.config(bg=t["danger_bg"], fg=t["danger"])
+            self.lbl_card_yield_val.config(bg=t["danger_bg"], fg=t["danger"])
+
+    def refresh_chart(self, total_pass, total_fail):
+        """Redibuja de forma dinámica la gráfica de barras de Matplotlib."""
+        self.ax.clear()
+        t = self.themes["light"]
+        
+        self.fig.patch.set_facecolor(t["surface"])
+        self.ax.set_facecolor(t["surface_2"])
+        
+        categories = ["Pass (OK)", "Fail (FAIL)"]
+        values = [total_pass, total_fail]
+        bar_colors = [t["success"], t["danger"]]
+
+        bars = self.ax.barh(categories, values, color=bar_colors, height=0.55)
+        
+        self.ax.tick_params(colors=t["text"], labelsize=9)
+        self.ax.spines['top'].set_visible(False)
+        self.ax.spines['right'].set_visible(False)
+        self.ax.spines['left'].set_color(t["border"])
+        self.ax.spines['bottom'].set_color(t["border"])
+        self.ax.grid(axis='x', color=t["border"], linestyle='--', alpha=0.5)
+
+        for bar in bars:
+            width = bar.get_width()
+            self.ax.text(
+                width + (max(values)*0.02 if max(values) > 0 else 0.1),
+                bar.get_y() + bar.get_height()/2,
+                f'{int(width)}',
+                va='center', ha='left',
+                color=t["text"], fontweight='bold', fontsize=9
+            )
+
+        self.fig.tight_layout()
+        self.canvas_plot.draw()
+
+    def refresh_pareto_chart(self):
+        """Dibuja un Diagrama de Pareto Industrial legítimo con nombres de estaciones rotados."""
+        self.ax_pareto_bars.clear()
+        
+        for ax in self.fig_pareto.get_axes():
+            if ax is not self.ax_pareto_bars:
+                ax.remove()
+
+        t = self.themes["light"]
+        self.fig_pareto.patch.set_facecolor(t["surface"])
+        self.ax_pareto_bars.set_facecolor(t["surface_2"])
+
+        if not self.top_failures:
+            self.ax_pareto_bars.text(0.5, 0.5, "0 DEFECTOS\nLínea Estable (100% OK)", 
+                                     ha='center', va='center', color=t["success"], fontweight='bold')
+            self.ax_pareto_bars.axis('off')
+            self.canvas_pareto.draw()
+            return
+
+        self.ax_pareto_bars.axis('on')
+        
+        # 🌟 CORRECCIÓN: Extraemos el nombre real de la estación en lugar del número genérico
+        stations = [str(st) for st, _ in self.top_failures]
+        counts = [count for _, count in self.top_failures]
+        
+        # 1. Eje Y Izquierdo: Barras de cantidad de fallas (Frecuencia)
+        self.ax_pareto_bars.bar(stations, counts, color="#FF9500", alpha=0.85, width=0.45, edgecolor="#E68200")
+        self.ax_pareto_bars.set_ylabel("Frecuencia (Fallas)", color="#E68200", fontweight="bold", fontsize=9)
+        self.ax_pareto_bars.tick_params(axis='y', labelcolor="#E68200", labelsize=8)
+        
+        # 🌟 MEJORA CRUCIAL DE DISEÑO: Rotamos las etiquetas del eje X a 45 grados y ajustamos alineación
+        # para que los nombres de las estaciones de la planta queden legibles y no se encimen
+        self.ax_pareto_bars.set_xticklabels(stations, rotation=45, ha='right', rotation_mode='anchor')
+        self.ax_pareto_bars.tick_params(axis='x', labelcolor=t["text"], labelsize=7)
+
+        # Calcular porcentajes acumulados matemáticos para la curva
+        total_failures = sum(counts)
+        cumulative_percentages = []
+        running_sum = 0
+        for c in counts:
+            running_sum += c
+            cumulative_percentages.append((running_sum / total_failures) * 100)
+
+        # 2. Eje Y Derecho: Línea de porcentaje acumulado (Curva de Pareto)
+        ax_curve = self.ax_pareto_bars.twinx()
+        ax_curve.plot(stations, cumulative_percentages, color="#007AFF", marker="o", linewidth=1.5, ms=4)
+        ax_curve.set_ylabel("Porcentaje Acumulado", color="#007AFF", fontweight="bold", fontsize=9)
+        ax_curve.tick_params(axis='y', labelcolor="#007AFF", labelsize=8)
+        ax_curve.set_ylim(0, 105)
+
+        # Estilizar límites corporativos
+        self.ax_pareto_bars.spines['top'].set_visible(False)
+        ax_curve.spines['top'].set_visible(False)
+        self.ax_pareto_bars.spines['left'].set_color(t["border"])
+        self.ax_pareto_bars.spines['bottom'].set_color(t["border"])
+        ax_curve.spines['right'].set_color(t["border"])
+        self.ax_pareto_bars.grid(axis='y', color=t["border"], linestyle='--', alpha=0.4)
+
+        # Redimensiona automáticamente los espacios inferiores para que la rotación no corte el texto
+        self.fig_pareto.tight_layout()
+        self.canvas_pareto.draw()
+
+
+
+
+    # ======================================================
+    # BÚSQUEDA Y FILTRADO RÁPIDO EN TIEMPO REAL (DICCIONARIOS)
+    # ======================================================
+
+    def filter_records(self):
+        """Filtra en caliente por el cuadro de texto y estatus (Protección de Memoria)."""
+        search_txt = self.search_var.get().upper()
+        status_filter = self.cmb_status.get()
+        
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        inserted_count = 0
+        
+        for row in self.records:
+            if inserted_count >= 1000:
+                break
+                
+            match_text = search_txt in row["Serial"].upper() or search_txt in row["Station"].upper()
+            match_status = True
+            
+            if status_filter in ["Pass", "OK", "Aprobados"] and row["Result"] != "OK":
+                match_status = False
+            elif status_filter in ["Fail", "FAIL", "Fallados"] and row["Result"] != "FAIL":
+                match_status = False
+
+            if match_text and match_status:
+                self.tree.insert("", "end", values=(
+                    row["Serial"], 
+                    row["Station"], 
+                    row["Test"], 
+                    row["Result"], 
+                    row["Timestamp"], 
+                    row["User"]
+                ))
+                inserted_count += 1
+
+    def apply_theme(self, init=False):
+        """Aplica la paleta de colores del tema Claro seleccionado a todos los widgets."""
+        t = self.themes["light"]
+        
+        self.style.configure(".", background=t["window"], foreground=t["text"])
+        self.style.configure("Treeview", background=t["surface"], foreground=t["text"], fieldbackground=t["surface"], bordercolor=t["border"], rowheight=26)
+        self.style.configure("Treeview.Heading", background=t["surface_2"], foreground=t["text"], font=("Segoe UI", 9, "bold"))
+        self.style.map("Treeview", background=[("selected", t["selected"])])
+        
+        self.root.config(bg=t["window"])
+        self.app.config(bg=t["window"])
+        self.header.config(bg=t["window"])
+        self.title_container.config(bg=t["window"])
+        self.header_buttons.config(bg=t["window"])
+        self.sidebar.config(bg=t["surface"], bd=1, relief="solid", highlightbackground=t["border"])
+        self.main_container.config(bg=t["window"])
+        self.cards_frame.config(bg=t["window"])
+        self.search_frame.config(bg=t["surface"], bd=1, relief="solid")
+        self.table_frame.config(bg=t["window"])
+        self.chart_frame.config(bg=t["window"])
+        self.pareto_frame.config(bg=t["window"])
+
+        labels = [self.lbl_title, self.lbl_subtitle, self.lbl_controls, self.lbl_date_range, self.lbl_start, self.lbl_end, self.lbl_table_title, self.lbl_chart_title, self.lbl_filter_status, self.lbl_filter_bu, self.lbl_pareto_title]
+        for lbl in labels: lbl.config(bg=lbl.master.cget("bg"), fg=t["text"])
+        
+        self.lbl_subtitle.config(fg=t["muted"])
+        self.lbl_date_range.config(fg=t["muted"])
+        self.txt_search.config(bg=t["surface"], fg=t["text"], insertbackground=t["text"])
+
+        self.card_total.config(bg=t["card"], bd=1, relief="solid")
+        self.card_pass.config(bg=t["card"], bd=1, relief="solid")
+        self.card_fail.config(bg=t["card"], bd=1, relief="solid")
+        
+        for c_lbl in [self.lbl_card_total_title, self.lbl_card_total_val, self.lbl_card_yield_title, self.lbl_card_yield_val, self.lbl_card_pass_title, self.lbl_card_pass_val, self.lbl_card_fail_title, self.lbl_card_fail_val]:
+            c_lbl.config(bg=c_lbl.master.cget("bg"), fg=t["text"])
+            
+        self.lbl_card_pass_val.config(fg=t["success"])
+        self.lbl_card_fail_val.config(fg=t["danger"])
+
+        buttons_primary = [self.btn_scan, self.btn_live]
+        for btn in buttons_primary: btn.config(bg=t["accent"], fg="#FFFFFF", activebackground=t["accent_hover"], activeforeground="#FFFFFF")
+        
+        buttons_sec = [self.btn_lang, self.btn_export_pdf]
+        for btn in buttons_sec: btn.config(bg=t["button_secondary"], fg=t["text"], activebackground=t["button_secondary_hover"], activeforeground=t["text"])
+
+    def update_ui_text(self):
+        """Actualiza todos los textos de la interfaz según el idioma activo."""
+        ld = self.lang_dict[self.current_lang]
+        self.lbl_title.config(text=ld["title"])
+        self.lbl_subtitle.config(text=ld["subtitle"])
+        self.lbl_controls.config(text=ld["controls"])
+        self.lbl_date_range.config(text=ld["date_range"])
+        self.lbl_start.config(text=ld["start_date"])
+        self.lbl_end.config(text=ld["end_date"])
+        self.btn_scan.config(text=ld["scan"])
+        self.btn_live.config(text=ld["live_on"] if self.live_mode else ld["live_off"])
+        self.btn_export_pdf.config(text=ld["export_pdf"])
+        self.lbl_card_total_title.config(text=ld["records"].upper())
+        self.lbl_card_yield_title.config(text=ld["yield"].upper())
+        self.lbl_card_pass_title.config(text=ld["pass"].upper())
+        self.lbl_card_fail_title.config(text=ld["fail"].upper())
+        self.lbl_filter_status.config(text=ld["status"])
+        self.lbl_table_title.config(text=ld["table_title"])
+        self.lbl_chart_title.config(text=ld["chart_title"])
+        self.lbl_pareto_title.config(text=ld["pareto_title"])
+        
+        self.cmb_status.config(values=[ld["all"], ld["pass"], ld["fail"]])
+        self.cmb_status.current(0)
+        
+        self.tree.heading("serial", text=ld["serial"])
+        self.tree.heading("station", text=ld["model"]) 
+        self.tree.heading("test", text=ld["test"])
+        self.tree.heading("result", text=ld["result"])
+        self.tree.heading("timestamp", text=ld["datetime"])
+        self.tree.heading("user", text=ld["user"])
+
+    def toggle_lang(self):
+        self.current_lang = "ENG" if self.current_lang == "ESP" else "ESP"
+        self.btn_lang.config(text=self.current_lang)
+        self.update_ui_text()
+
+    def toggle_theme(self):
+        pass 
+
+    def toggle_live_mode(self):
+        self.live_mode = not self.live_mode
+        ld = self.lang_dict[self.current_lang]
+        self.btn_live.config(text=ld["live_on"] if self.live_mode else ld["live_off"])
+
+    def run_live_loop(self):
+        """Dispara de forma silenciosa una recarga automática en segundo plano cada 30 segundos."""
+        if self.live_mode and not self.is_scanning: 
+            self.start_async_load(is_automated=True)
+            
+        self.root.after(30000, self.run_live_loop)
+
+    def reset_local_db(self): 
+        pass
+
+    def delete_selected_record(self): 
+        pass
+
+
+# ======================================================
+# PUNTO DE ARRANQUE OFICIAL DE LA APLICACIÓN
+# ======================================================
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = NPIApp(root)
+    root.mainloop()
