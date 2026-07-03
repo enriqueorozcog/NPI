@@ -1,0 +1,88 @@
+import streamlit as st
+import pandas as pd
+import io
+import os
+
+# --- INTERFAZ WEB DE USUARIO (STREAMLIT) ---
+st.set_page_config(page_title="Rastreador MES - Producción", page_icon="⚙️", layout="centered")
+
+st.title("Auditor Masivo de Estaciones Actuales")
+st.markdown("---")
+st.write("Sube tu archivo Excel con números de serie en la primera columna para conocer su estatus actual en piso al instante.")
+
+# Ruta fija al archivo maestro exportado desde DBeaver
+RUTA_LOCAL_DB = r"c:/Users/enrique_orozco/Desktop/db_estatus.csv"
+
+# Indicador visual en la barra lateral
+if not os.path.exists(RUTA_LOCAL_DB):
+    st.sidebar.error("❌ Archivo 'db_estatus.csv' no detectado en el Escritorio.")
+    st.sidebar.info("Por favor, exporta la tabla de DBeaver a tu Escritorio con ese nombre para activar la app.")
+else:
+    st.sidebar.success("✓ Puente de datos con DBeaver conectado con éxito")
+
+# Único cargador de archivos en la interfaz principal (Para tu Excel manual)
+archivo_subido = st.file_uploader("Arrastra aquí tu archivo Excel de Números de Serie (.xlsx)", type=["xlsx"])
+
+if archivo_subido is not None:
+    try:
+        # Leemos el Excel manual del usuario
+        df_origen = pd.read_excel(archivo_subido, dtype=str)
+        
+        if df_origen.empty:
+            st.warning("El archivo Excel seleccionado no contiene datos.")
+        else:
+            # Tomamos estrictamente la primera columna de datos
+            columna_sn = df_origen.iloc[:, 0]
+            # Limpiamos las series eliminando comillas y espacios en blanco
+            lista_sns = columna_sn.dropna().astype(str).str.replace('"', '').str.strip().unique().tolist()
+            
+            st.info(f"📋 Se detectaron **{len(lista_sns)}** Números de Serie únicos para procesar.")
+            
+            if st.button("🚀 Ejecutar Consulta Masiva", use_container_width=True):
+                if not os.path.exists(RUTA_LOCAL_DB):
+                    st.error("No se puede procesar: Falta el archivo 'db_estatus.csv' en tu Escritorio.")
+                else:
+                    with st.spinner("Procesando datos a través del puente local de DBeaver..."):
+                        
+                        # Leemos la base de datos local exportada de DBeaver
+                        df_db = pd.read_csv(RUTA_LOCAL_DB, dtype=str)
+                        
+                        # Limpieza exhaustiva de la base de datos de DBeaver
+                        df_db['SERIAL_NR'] = df_db['SERIAL_NR'].astype(str).str.replace('"', '').str.strip()
+                        df_db['STATUS'] = df_db['STATUS'].astype(str).str.replace('"', '').str.strip()
+                        
+                        # Convertimos a diccionario indexado para una búsqueda instantánea
+                        diccionario_estaciones = pd.Series(df_db.STATUS.values, index=df_db.SERIAL_NR).to_dict()
+                        
+                        # Realizamos el cruce masivo
+                        registros_finales = []
+                        for sn in lista_sns:
+                            estacion = diccionario_estaciones.get(sn, "NOT FOUND (No registrado)")
+                            registros_finales.append({
+                                "Serial No": sn,
+                                "Item Status": estacion
+                            })
+                        
+                        df_resultado = pd.DataFrame(registros_finales)
+                        
+                        st.success("¡Consulta completada con éxito sin errores de red!")
+                        
+                        st.write("### Vista previa del reporte:")
+                        st.dataframe(df_resultado, use_container_width=True)
+                        
+                        # Generación del archivo Excel final descargable
+                        buffer_excel = io.BytesIO()
+                        with pd.ExcelWriter(buffer_excel, engine='openpyxl') as writer:
+                            df_resultado.to_excel(writer, index=False, sheet_name='Estatus Actual')
+                        buffer_excel.seek(0)
+                        
+                        st.download_button(
+                            label="📥 Descargar archivo Excel procesado",
+                            data=buffer_excel,
+                            file_name="reporte_estaciones_actuales.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True
+                        )
+                        
+    except Exception as e:
+        st.error(f"Error al leer o procesar el archivo Excel: {e}")
