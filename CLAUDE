@@ -1,0 +1,1810 @@
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+import sqlite3
+import os
+import re
+import json
+import datetime
+import time
+import threading
+import configparser
+
+# Conector nativo de alto rendimiento para base de datos Oracle
+import oracledb
+
+from tkcalendar import DateEntry
+
+# Componentes de ReportLab para la generación de reportes ejecutivos con gráficas
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.pagesizes import letter
+from reportlab.lib import colors
+
+import matplotlib
+matplotlib.use("TkAgg")
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
+
+def check_and_create_config():
+    """Genera automáticamente el archivo de configuración si no existe para proteger credenciales."""
+    config_file = "config.ini"
+    config = configparser.ConfigParser()
+    if not os.path.exists(config_file):
+        config["DATABASE"] = {
+            "host": "10.235.5.11",
+            "port": "1521",
+            "service_name": "pmxesdb1",
+            "user": "PMXERS_RPT",
+            "password": "rptPMX$2310"
+        }
+        with open(config_file, "w") as configfile:
+            config.write(configfile)
+    config.read(config_file)
+    return config["DATABASE"]
+
+class LogParserEngine:
+    """Motor analítico para parseo de logs con JSON embebido (Compatibilidad Local)."""
+    @staticmethod
+    def parse_file(file_path):
+        serial, model, test = None, None, None
+        result, dt = "Fail", None
+        ts_re = re.compile(r"^\[(?P<dt>\d{4}-\d{2}-\d{2})T(?P<t>\d{2}:\d{2}:\d{2})")
+        js_re = re.compile(r"-\s+(\{.*ProductName.*SerialNumber.*\})")
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                content = f.read()
+                f.seek(0)
+                for line in f:
+                    if not dt:
+                        ts_m = ts_re.match(line)
+                        if ts_m: dt = f"{ts_m.group('dt')} {ts_m.group('t')}"
+                    js_m = js_re.search(line)
+                    if js_m:
+                        try:
+                            d = json.loads(js_m.group(1))
+                            serial = d.get("SerialNumber") or d.get("SystemDutSn")
+                            model = d.get("ProductName") or d.get("Project")
+                        except Exception: pass
+            if "Starting CrewReprovision..." in content or "Starting CrewDevicePrep..." in content:
+                if "Success" in content: result = "Pass"
+        except Exception: pass
+        return serial, model, test, result, dt
+
+
+class NPIApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("NPI Quality Control Intelligence")
+        self.root.geometry("1240x890")
+        self.root.minsize(1100, 780)
+        self.root.resizable(True, True)
+
+        self.current_lang = "ESP"
+        self.records = []       
+        self.filtered_records = [] 
+        self.top_failures = []  
+        
+        self.sort_directions = {
+            "serial": False, "station": False, "test": False, 
+            "result": False, "timestamp": False, "user": False
+        }
+        
+        self.canvas_plot = None
+        self.canvas_pareto = None
+        self.live_mode = True
+        self.is_scanning = False
+        self.db_config = check_and_create_config()
+        self.init_database()
+
+        self.themes = {
+            "light": {
+                "window": "#F5F5F7", "surface": "#FFFFFF", "surface_2": "#F2F2F7",
+                "card": "#FFFFFF", "card_2": "#FAFAFC", "border": "#D8D8E0",
+                "text": "#1D1D1F", "muted": "#6E6E73", "muted_2": "#8E8E93",
+                "accent": "#007AFF", "accent_hover": "#0066CC", 
+                "success": "#34C759", "success_bg": "#EAF8EF",
+                "danger": "#FF3B30", "danger_bg": "#FDECEC",
+                "warning": "#FF9500", "warning_bg": "#FFF4E5",
+                "selected": "#007AFF", "button_secondary": "#EFEFF4",
+                "button_secondary_hover": "#E5E5EA", "status_bar": "#E5E5EA"
+            }
+        }
+
+        self.lang_dict = {
+            "ESP": {
+                "title": "NPI Quality Control Intelligence",
+                "subtitle": "Inteligencia automatizada para logs, yield, fallas y control de calidad",
+                "controls": "Controles", "date_range": "Rango de fechas",
+                "start_date": "Fecha inicio", "end_date": "Fecha fin",
+                "scan": "Refresh Panel", "live_off": "Modo en vivo: OFF",
+                "live_on": "Modo en vivo: ON", "export_pdf": "Generar PDF", 
+                "records": "Registros", "yield": "Yield", "pass": "Pass", "fail": "Fail",
+                "status": "Estatus", "all": "Todos", "table_title": "Inspection records",
+                "chart_title": "Result distribution", "serial": "Serial",
+                "model": "Station", "test": "Prueba", "result": "Resultado",
+                "datetime": "Timestamp", "user": "Operator",
+                "pareto_title": "Gráfica de Pareto Analítica (Causa Raíz)",
+                "status_connected": "● Sistema Conectado | Sincronizado en: ",
+                "status_contingency": "● Modo Contingencia (Datos Locales) | Refresco: ",
+                "shift": "Turno", "shift_all": "Todos", "shift_1": "1er Turno", "shift_2": "2do Turno", "shift_3": "3er Turno",
+                "view_mode": "Modo Vista", "view_all": "Todos los Intentos", "view_unique": "Unidades Únicas (Último Estado)",
+                "btn_dashboard_cards": "Dashboard Diario", "dash_cards_title": "Dashboard de Rendimiento Diario por Estación"
+            },
+            "ENG": {
+                "title": "NPI Quality Control Intelligence",
+                "subtitle": "Automated intelligence for logs, yield, failures and quality control",
+                "controls": "Controls", "date_range": "Date range",
+                "start_date": "Start date", "end_date": "End date",
+                "scan": "Refresh Panel", "live_off": "Live mode: OFF",
+                "live_on": "Live mode: ON", "export_pdf": "Generate PDF",
+                "records": "Records", "yield": "Yield", "pass": "Pass", "fail": "Fail",
+                "status": "Status", "all": "All", "table_title": "Inspection records",
+                "chart_title": "Result distribution", "serial": "Serial",
+                "model": "Station", "test": "Test", "result": "Result",
+                "datetime": "Timestamp", "user": "Operator",
+                "pareto_title": "Analytical Pareto Chart (Root Cause)",
+                "status_connected": "● Connected | Sync time: ",
+                "status_contingency": "● Contingency Mode (Local Data) | Refreshed: ",
+                "shift": "Shift", "shift_all": "All", "shift_1": "1st Shift", "shift_2": "2nd Shift", "shift_3": "3rd Shift",
+                "view_mode": "View Mode", "view_all": "All Attempts", "view_unique": "Unique Units (Last State)",
+                "btn_dashboard_cards": "Daily Dashboard", "dash_cards_title": "Daily Station Performance Dashboard"
+            }
+        }
+        self.style = ttk.Style()
+        self.style.theme_use("clam")
+        self.build_ui()
+        self.update_ui_text()
+        self.apply_theme()
+        self.root.update()
+        self.start_async_load(is_automated=True)
+        self.run_live_loop()
+
+    def init_database(self):
+        self.conn = sqlite3.connect("npi_automated_quality.db", check_same_thread=False)
+        self.cursor_local = self.conn.cursor()
+        self.cursor_local.execute("""
+            CREATE TABLE IF NOT EXISTS server_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                serial TEXT NOT NULL, station TEXT NOT NULL, test TEXT NOT NULL,
+                result TEXT NOT NULL, datetime TEXT NOT NULL, operator TEXT NOT NULL, bu TEXT NOT NULL,
+                UNIQUE(serial, datetime, station)
+            )
+        """)
+        self.conn.commit()
+
+
+    def build_ui(self):
+        """Maquetación visual unificada con sangrías estandarizadas para el panel de control."""
+        self.app = tk.Frame(self.root)
+        self.app.grid(row=0, column=0, sticky="nsew")
+        self.app.grid_rowconfigure(1, weight=1)
+        self.app.grid_columnconfigure(1, weight=1)
+
+        # SECCIÓN SUPERIOR: Encabezado de la suite ejecutiva
+        self.header = tk.Frame(self.app, height=86)
+        self.header.grid(row=0, column=0, columnspan=2, sticky="ew", padx=30, pady=(22, 12))
+        self.header.grid_propagate(False)
+        self.title_container = tk.Frame(self.header)
+        self.title_container.pack(side="left")
+        
+        self.lbl_title = tk.Label(self.title_container, font=("Segoe UI", 22, "bold"))
+        self.lbl_title.pack(anchor="w")
+        self.lbl_subtitle = tk.Label(self.title_container, font=("Segoe UI", 10))
+        self.lbl_subtitle.pack(anchor="w", pady=(4, 0))
+
+        # SECCIÓN LATERAL IZQUIERDA: Barra de controles y selectores
+        self.sidebar = tk.Frame(self.app, width=300)
+        self.sidebar.grid(row=1, column=0, sticky="nsw", padx=(30, 12), pady=(0, 28))
+        self.sidebar.grid_propagate(False)
+
+        self.lbl_controls = tk.Label(self.sidebar, font=("Segoe UI", 14, "bold"))
+        self.lbl_controls.pack(fill="x", padx=22, pady=(22, 18))
+        self.lbl_date_range = tk.Label(self.sidebar, font=("Segoe UI", 9, "bold"))
+        self.lbl_date_range.pack(fill="x", padx=22, pady=(0, 14))
+
+        self.lbl_start = tk.Label(self.sidebar, font=("Segoe UI", 9))
+        self.lbl_start.pack(fill="x", padx=22)
+        self.date_start = DateEntry(self.sidebar, date_pattern="yyyy-mm-dd", font=("Segoe UI", 10), borderwidth=0)
+        self.date_start.pack(fill="x", padx=22, ipady=6, pady=(0, 16))
+
+        self.lbl_end = tk.Label(self.sidebar, font=("Segoe UI", 9))
+        self.lbl_end.pack(fill="x", padx=22)
+        self.date_end = DateEntry(self.sidebar, date_pattern="yyyy-mm-dd", font=("Segoe UI", 10), borderwidth=0)
+        self.date_end.pack(fill="x", padx=22, ipady=6, pady=(0, 22))
+
+        self.btn_scan = tk.Button(self.sidebar, bd=0, font=("Segoe UI", 10, "bold"), cursor="hand2", pady=12, command=lambda: self.start_async_load(is_automated=False))
+        self.btn_scan.pack(fill="x", padx=22, pady=(0, 10))
+        self.btn_live = tk.Button(self.sidebar, bd=0, font=("Segoe UI", 10, "bold"), cursor="hand2", pady=12, command=self.toggle_live_mode)
+        self.btn_live.pack(fill="x", padx=22, pady=(0, 18))
+
+        self.progress = ttk.Progressbar(self.sidebar, orient="horizontal", mode="determinate")
+        self.progress.pack(fill="x", padx=22, pady=(0, 24))
+        tk.Frame(self.sidebar, height=1).pack(fill="x", padx=22, pady=(0, 20))
+
+        self.btn_export_pdf = tk.Button(self.sidebar, bd=0, font=("Segoe UI", 10, "bold"), cursor="hand2", pady=12, command=self.export_to_pdf)
+        self.btn_export_pdf.pack(fill="x", padx=22, pady=(0, 10))
+        self.btn_dash_cards = tk.Button(self.sidebar, bd=0, font=("Segoe UI", 10, "bold"), cursor="hand2", pady=12, command=self.open_daily_dashboard_window)
+        self.btn_dash_cards.pack(fill="x", padx=22)
+
+
+                # SECCIÓN CENTRAL: Contenedor principal de datos
+        self.main_container = tk.Frame(self.app)
+        self.main_container.grid(row=1, column=1, sticky="nsew", padx=(12, 30), pady=(0, 10))
+        self.main_container.grid_rowconfigure(2, weight=1)
+        self.main_container.grid_columnconfigure(0, weight=1)
+
+        # PANALES SUPERIORES: Tarjetas corporativas de KPIs para planta
+        self.cards_frame = tk.Frame(self.main_container)
+        self.cards_frame.grid(row=0, column=0, sticky="ew", pady=(0, 16))
+        for i in range(4): 
+            self.cards_frame.grid_columnconfigure(i, weight=1)
+
+        self.card_total = tk.Frame(self.cards_frame, height=94)
+        self.card_total.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self.lbl_card_total_title = tk.Label(self.card_total, font=("Segoe UI", 9, "bold"))
+        self.lbl_card_total_title.pack(fill="x", padx=16, pady=(12, 2))
+        self.lbl_card_total_val = tk.Label(self.card_total, text="0", font=("Segoe UI", 24, "bold"), anchor="w")
+        self.lbl_card_total_val.pack(fill="x", padx=16)
+
+        self.card_yield = tk.Frame(self.cards_frame, height=94)
+        self.card_yield.grid(row=0, column=1, sticky="ew", padx=4)
+        self.lbl_card_yield_title = tk.Label(self.card_yield, font=("Segoe UI", 9, "bold"))
+        self.lbl_card_yield_title.pack(fill="x", padx=16, pady=(12, 2))
+        self.lbl_card_yield_val = tk.Label(self.card_yield, text="0.0%", font=("Segoe UI", 24, "bold"), anchor="w")
+        self.lbl_card_yield_val.pack(fill="x", padx=16)
+
+        self.card_pass = tk.Frame(self.cards_frame, height=94)
+        self.card_pass.grid(row=0, column=2, sticky="ew", padx=4)
+        self.lbl_card_pass_title = tk.Label(self.card_pass, font=("Segoe UI", 9, "bold"))
+        self.lbl_card_pass_title.pack(fill="x", padx=16, pady=(12, 2))
+        self.lbl_card_pass_val = tk.Label(self.card_pass, text="0", font=("Segoe UI", 24, "bold"), anchor="w")
+        self.lbl_card_pass_val.pack(fill="x", padx=16)
+
+        self.card_fail = tk.Frame(self.cards_frame, height=94)
+        self.card_fail.grid(row=0, column=3, sticky="ew", padx=(8, 0))
+        self.lbl_card_fail_title = tk.Label(self.card_fail, font=("Segoe UI", 9, "bold"))
+        self.lbl_card_fail_title.pack(fill="x", padx=16, pady=(12, 2))
+        self.lbl_card_fail_val = tk.Label(self.card_fail, text="0", font=("Segoe UI", 24, "bold"), anchor="w")
+        self.lbl_card_fail_val.pack(fill="x", padx=16)
+
+        # FRANJA DE FILTRADO: Barra reactiva para búsquedas y combos de turno
+        self.search_frame = tk.Frame(self.main_container, height=54)
+        self.search_frame.grid(row=1, column=0, sticky="ew", pady=(0, 16))
+        self.search_frame.grid_columnconfigure(0, weight=1)
+        self.search_frame.grid_propagate(False)
+
+        self.search_var = tk.StringVar()
+        self.search_var.trace_add("write", lambda *a: self.filter_records())
+        self.txt_search = tk.Entry(self.search_frame, textvariable=self.search_var, font=("Segoe UI", 10), bd=0)
+        self.txt_search.grid(row=0, column=0, sticky="ew", padx=16, pady=13)
+
+        self.lbl_filter_status = tk.Label(self.search_frame, font=("Segoe UI", 9, "bold"))
+        self.lbl_filter_status.grid(row=0, column=1, padx=(6, 4), pady=13)
+        self.cmb_status = ttk.Combobox(self.search_frame, font=("Segoe UI", 10), state="readonly", width=8)
+        self.cmb_status.grid(row=0, column=2, padx=(0, 6), pady=11)
+        self.cmb_status.bind("<<ComboboxSelected>>", lambda e: self.filter_records())
+
+        self.lbl_filter_shift = tk.Label(self.search_frame, font=("Segoe UI", 9, "bold"))
+        self.lbl_filter_shift.grid(row=0, column=3, padx=(6, 4), pady=13)
+        self.cmb_shift = ttk.Combobox(self.search_frame, font=("Segoe UI", 10), state="readonly", width=9)
+        self.cmb_shift.grid(row=0, column=4, padx=(0, 6), pady=11)
+        self.cmb_shift.bind("<<ComboboxSelected>>", lambda e: self.filter_records())
+
+        self.lbl_view_mode = tk.Label(self.search_frame, font=("Segoe UI", 9, "bold"))
+        self.lbl_view_mode.grid(row=0, column=5, padx=(6, 4), pady=13)
+        self.cmb_view_mode = ttk.Combobox(self.search_frame, font=("Segoe UI", 10), state="readonly", width=16)
+        self.cmb_view_mode.grid(row=0, column=6, padx=(0, 10), pady=11)
+        self.cmb_view_mode.bind("<<ComboboxSelected>>", lambda e: self.filter_records())
+
+        self.lbl_filter_bu = tk.Label(self.search_frame, text="BU", font=("Segoe UI", 9, "bold"))
+        self.lbl_filter_bu.grid(row=0, column=7, padx=(6, 4), pady=13)
+        self.cmb_bu = ttk.Combobox(self.search_frame, font=("Segoe UI", 10), state="readonly", width=6)
+        self.cmb_bu.grid(row=0, column=8, padx=(0, 16), pady=11)
+        self.cmb_bu["values"] = ["SUR", "NFF", "IRR"]
+        self.cmb_bu.current(0)
+        self.cmb_bu.bind("<<ComboboxSelected>>", lambda e: self.start_async_load(is_automated=True))
+
+
+                # SECCIÓN DE DATOS: Malla física de registros de inspección (Treeview)
+        self.table_frame = tk.Frame(self.main_container)
+        self.table_frame.grid(row=2, column=0, sticky="nsew", pady=(0, 16))
+        self.table_frame.grid_rowconfigure(1, weight=1)
+        self.table_frame.grid_columnconfigure(0, weight=1)
+
+        self.lbl_table_title = tk.Label(self.table_frame, font=("Segoe UI", 12, "bold"))
+        self.lbl_table_title.grid(row=0, column=0, sticky="w", padx=4, pady=(0, 10))
+
+        columns = ("serial", "station", "test", "result", "timestamp", "user")
+        self.tree = ttk.Treeview(self.table_frame, columns=columns, show="headings", selectmode="browse")
+        self.tree.grid(row=1, column=0, sticky="nsew")
+
+        self.scrollbar = ttk.Scrollbar(self.table_frame, orient="vertical", command=self.tree.yview)
+        self.scrollbar.grid(row=1, column=1, sticky="ns")
+        self.tree.configure(yscrollcommand=self.scrollbar.set)
+
+        self.tree.heading("serial", command=lambda: self.sort_column_data("serial"))
+        self.tree.heading("station", command=lambda: self.sort_column_data("station"))
+        self.tree.heading("test", command=lambda: self.sort_column_data("test"))
+        self.tree.heading("result", command=lambda: self.sort_column_data("result"))
+        self.tree.heading("timestamp", command=lambda: self.sort_column_data("timestamp"))
+
+        # SECCIÓN INFERIOR: Contenedores dobles de gráficas ejecutivas
+        self.charts_row_frame = tk.Frame(self.main_container)
+        self.charts_row_frame.grid(row=3, column=0, sticky="ew")
+        self.charts_row_frame.grid_columnconfigure(0, weight=1)
+        self.charts_row_frame.grid_columnconfigure(1, weight=1)
+
+        self.chart_frame = tk.Frame(self.charts_row_frame)
+        self.chart_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        self.lbl_chart_title = tk.Label(self.chart_frame, font=("Segoe UI", 12, "bold"))
+        self.lbl_chart_title.grid(row=0, column=0, sticky="w", padx=4, pady=(0, 6))
+
+        self.pareto_frame = tk.Frame(self.charts_row_frame)
+        self.pareto_frame.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        self.lbl_pareto_title = tk.Label(self.pareto_frame, font=("Segoe UI", 12, "bold"))
+        self.lbl_pareto_title.grid(row=0, column=0, sticky="w", padx=4, pady=(0, 6))
+
+        self.status_bar_frame = tk.Frame(self.app, height=22)
+        self.status_bar_frame.grid(row=2, column=0, columnspan=2, sticky="ew")
+        self.lbl_status_msg = tk.Label(self.status_bar_frame, font=("Segoe UI", 9), anchor="w", padx=12)
+        self.lbl_status_msg.pack(fill="x", pady=2)
+
+        # Inicialización analítica de los lienzos de Matplotlib
+        self.fig = Figure(figsize=(5, 2.0), dpi=100)
+        self.ax = self.fig.add_subplot(111)
+        self.canvas_plot = FigureCanvasTkAgg(self.fig, master=self.chart_frame)
+        self.canvas_plot.get_tk_widget().grid(row=1, column=0, sticky="ew", pady=(0, 4))
+
+        self.fig_pareto = Figure(figsize=(5, 2.0), dpi=100)
+        self.ax_pareto_bars = self.fig_pareto.add_subplot(111)
+        self.canvas_pareto = FigureCanvasTkAgg(self.fig_pareto, master=self.pareto_frame)
+        self.canvas_pareto.get_tk_widget().grid(row=1, column=0, sticky="ew", pady=(0, 4))
+
+
+    def start_async_load(self, is_automated=False):
+        """Dispara la consulta en segundo plano liberando los filtros y botones en caliente."""
+        if self.is_scanning: return 
+        self.is_scanning = True
+        if not is_automated:
+            self.btn_scan.config(state="disabled", text="Cargando...")
+            self.progress.start(10)
+        t = threading.Thread(target=self.load_data_thread, args=(is_automated,), daemon=True)
+        t.start()
+
+    def load_data_thread(self, is_automated):
+        """Consulta remota con mapa de estaciones y desempaquetado posicional explícito."""
+        estaciones_por_bu = {
+            "SUR": ['MSRSFPREPARE', 'MSRSFPREPARE2', 'MSRSFFCT', 'MSRSFFCT2', 'MSRSFPROVISION', 'MSRSFREIMAGE', 'MSRSFREIMAGE2', 'MSRSFREIMAGE3', 'MSRSFROLLBACK', 'MSRSFROLLBACK2', 'MSRSFROLLBACK3'],
+            "NFF": ['MSRSCPREPARE', 'MSRSCFT', 'MSRSCPROVISION', 'MSRSCREIMAGE', 'MSRSCREIMAGE2', 'MSRSCROLLBACK'],
+            "IRR": ['MSRIRRPREPARE', 'MSRIRRPREPARE2', 'MSRIRRFCT', 'MSRIRRFCT2', 'MSRIRRFCT3', 'MSRIRRPROVISION', 'MSRIRRREIMAGE', 'MSRIRRREIMAGE2', 'MSRIRRREIMAGE3', 'MSRIRRROLLBACK', 'MSRIRRROLLBACK2', 'MSRIRRROLLBACK3']
+        }
+        bu_seleccionada = self.cmb_bu.get()
+        lista_estaciones = estaciones_por_bu.get(bu_seleccionada, estaciones_por_bu["SUR"])
+        fecha_ini = self.date_start.get_date().strftime('%Y-%m-%d')
+        fecha_fin = self.date_end.get_date().strftime('%Y-%m-%d')
+        mapped_records = []
+        is_contingency = False
+        execution_time = 0.0
+
+        try:
+            start_time = time.time()
+            connection = oracledb.connect(
+                user=self.db_config["user"], password=self.db_config["password"],
+                host=self.db_config["host"], port=int(self.db_config["port"]), service_name=self.db_config["service_name"]
+            )
+            cursor = connection.cursor()
+            placeholders = [f":est{i}" for i in range(len(lista_estaciones))]
+            in_clause = ",".join(placeholders)
+
+            query = f"""
+                SELECT SERIAL_NR, CURR_STATUS, 'TEST', MEMO, TO_CHAR(CT_DATE, 'YYYY-MM-DD HH24:MI:SS'), 'Operator'
+                FROM ERS.ERS_ITEM_TRACK
+                WHERE CURR_STATUS IN ({in_clause})
+                  AND TRUNC(CT_DATE) BETWEEN TO_DATE(:f_inicio, 'YYYY-MM-DD') AND TO_DATE(:f_fin, 'YYYY-MM-DD')
+                ORDER BY CT_DATE ASC
+            """
+            parametros_query = {f"est{i}": est for i, est in enumerate(lista_estaciones)}
+            parametros_query["f_inicio"] = fecha_ini
+            parametros_query["f_fin"] = fecha_fin
+
+            cursor.execute(query, parametros_query)
+            raw_data = cursor.fetchall()
+            execution_time = round(time.time() - start_time, 2)
+
+            # 🌟 CORRECCIÓN MAESTRA: Desempaquetado por índice real de columna de Oracle
+            for row in raw_data:
+                if not row or len(row) < 6: continue
+                s_val = str(row[0]).strip() if row[0] is not None else ""
+                st_val = str(row[1]).strip() if row[1] is not None else ""
+                t_val = str(row[2]).strip() if row[2] is not None else "TEST"
+                r_val = str(row[3]).strip() if row[3] is not None else "FAIL"
+                ts_val = str(row[4]).strip() if row[4] is not None else ""
+                u_val = str(row[5]).strip() if row[5] is not None else "Operator"
+
+                mapped_records.append({
+                    "Serial": s_val, "Station": st_val, "Test": t_val,
+                    "Result": r_val, "Timestamp": ts_val, "User": u_val
+                })
+                try:
+                    self.cursor_local.execute("""
+                        INSERT OR IGNORE INTO server_logs (serial, station, test, result, datetime, operator, bu)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, (s_val, st_val, t_val, r_val, ts_val, u_val, bu_seleccionada))
+                except Exception: pass
+            self.conn.commit()
+            cursor.close()
+            connection.close()
+        except Exception:
+            is_contingency = True
+            mapped_records = []
+            try:
+                placeholders = ",".join(["?"] * len(lista_estaciones))
+                local_query = f"""
+                    SELECT serial, station, test, result, datetime, operator FROM server_logs 
+                    WHERE bu = ? AND station IN ({placeholders}) AND SUBSTR(datetime, 1, 10) BETWEEN ? AND ?
+                    ORDER BY datetime ASC
+                """
+                self.cursor_local.execute(local_query, [bu_seleccionada] + lista_estaciones + [fecha_ini, fecha_fin])
+                for r in self.cursor_local.fetchall():
+                    if not r or len(r) < 6: continue
+                    mapped_records.append({
+                        "Serial": str(r[0]).strip(), "Station": str(r[1]).strip(), "Test": str(r[2]).strip(),
+                        "Result": str(r[3]).strip(), "Timestamp": str(r[4]).strip(), "User": str(r[5]).strip()
+                    })
+            except Exception: pass
+
+        self.root.after(0, lambda: self.finalize_data_load(mapped_records, is_contingency, execution_time, is_automated))
+
+        """Consulta remota multinivel con extracción indexada explícita de columnas Oracle."""
+        estaciones_por_bu = {
+            "SUR": ['MSRSFPREPARE', 'MSRSFPREPARE2', 'MSRSFFCT', 'MSRSFFCT2', 'MSRSFPROVISION', 'MSRSFREIMAGE', 'MSRSFREIMAGE2', 'MSRSFREIMAGE3', 'MSRSFROLLBACK', 'MSRSFROLLBACK2', 'MSRSFROLLBACK3'],
+            "NFF": ['MSRSCPREPARE', 'MSRSCFT', 'MSRSCPROVISION', 'MSRSCREIMAGE', 'MSRSCREIMAGE2', 'MSRSCROLLBACK'],
+            "IRR": ['MSRIRRPREPARE', 'MSRIRRPREPARE2', 'MSRIRRFCT', 'MSRIRRFCT2', 'MSRIRRFCT3', 'MSRIRRPROVISION', 'MSRIRRREIMAGE', 'MSRIRRREIMAGE2', 'MSRIRRREIMAGE3', 'MSRIRRROLLBACK', 'MSRIRRROLLBACK2', 'MSRIRRROLLBACK3']
+        }
+        bu_seleccionada = self.cmb_bu.get()
+        lista_estaciones = estaciones_por_bu.get(bu_seleccionada, estaciones_por_bu["SUR"])
+        fecha_ini = self.date_start.get_date().strftime('%Y-%m-%d')
+        fecha_fin = self.date_end.get_date().strftime('%Y-%m-%d')
+        mapped_records = []
+        is_contingency = False
+        execution_time = 0.0
+
+        try:
+            start_time = time.time()
+            connection = oracledb.connect(
+                user=self.db_config["user"], password=self.db_config["password"],
+                host=self.db_config["host"], port=int(self.db_config["port"]), service_name=self.db_config["service_name"]
+            )
+            cursor = connection.cursor()
+            placeholders = [f":est{i}" for i in range(len(lista_estaciones))]
+            in_clause = ",".join(placeholders)
+
+            query = f"""
+                SELECT SERIAL_NR, CURR_STATUS, 'TEST', MEMO, TO_CHAR(CT_DATE, 'YYYY-MM-DD HH24:MI:SS'), 'Operator'
+                FROM ERS.ERS_ITEM_TRACK
+                WHERE CURR_STATUS IN ({in_clause})
+                  AND TRUNC(CT_DATE) BETWEEN TO_DATE(:f_inicio, 'YYYY-MM-DD') AND TO_DATE(:f_fin, 'YYYY-MM-DD')
+                ORDER BY CT_DATE ASC
+            """
+            parametros_query = {f"est{i}": est for i, est in enumerate(lista_estaciones)}
+            parametros_query["f_inicio"] = fecha_ini
+            parametros_query["f_fin"] = fecha_fin
+
+            cursor.execute(query, parametros_query)
+            raw_data = cursor.fetchall()
+            execution_time = round(time.time() - start_time, 2)
+
+            # 🌟 EXTRAE CADA COLUMNA INDIVIDUAL POR SU ÍNDICE POSICIONAL CORREGIDO EN LA TUPLA
+            for row in raw_data:
+                if not row or len(row) < 6: continue
+                s_val = str(row[0]).strip() if row[0] is not None else ""
+                st_val = str(row[1]).strip() if row[1] is not None else ""
+                t_val = str(row[2]).strip() if row[2] is not None else "TEST"
+                r_val = str(row[3]).strip() if row[3] is not None else "FAIL"
+                ts_val = str(row[4]).strip() if row[4] is not None else ""
+                u_val = str(row[5]).strip() if row[5] is not None else "Operator"
+
+                mapped_records.append({
+                    "Serial": s_val, "Station": st_val, "Test": t_val,
+                    "Result": r_val, "Timestamp": ts_val, "User": u_val
+                })
+                try:
+                    self.cursor_local.execute("""
+                        INSERT OR IGNORE INTO server_logs (serial, station, test, result, datetime, operator, bu)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, (s_val, st_val, t_val, r_val, ts_val, u_val, bu_seleccionada))
+                except Exception: pass
+            self.conn.commit()
+            cursor.close()
+            connection.close()
+        except Exception:
+            is_contingency = True
+            mapped_records = []
+            try:
+                placeholders = ",".join(["?"] * len(lista_estaciones))
+                local_query = f"""
+                    SELECT serial, station, test, result, datetime, operator FROM server_logs 
+                    WHERE bu = ? AND station IN ({placeholders}) AND SUBSTR(datetime, 1, 10) BETWEEN ? AND ?
+                    ORDER BY datetime ASC
+                """
+                self.cursor_local.execute(local_query, [bu_seleccionada] + lista_estaciones + [fecha_ini, fecha_fin])
+                for r in self.cursor_local.fetchall():
+                    if not r or len(r) < 6: continue
+                    mapped_records.append({
+                        "Serial": str(r[0]).strip(), "Station": str(r[1]).strip(), "Test": str(r[2]).strip(),
+                        "Result": str(r[3]).strip(), "Timestamp": str(r[4]).strip(), "User": str(r[5]).strip()
+                    })
+            except Exception: pass
+
+        self.root.after(0, lambda: self.finalize_data_load(mapped_records, is_contingency, execution_time, is_automated))
+
+    def finalize_data_load(self, mapped_records, is_contingency, execution_time, is_automated):
+        self.is_scanning = False
+        ld = self.lang_dict[self.current_lang]
+        if not is_automated:
+            self.progress.stop()
+            self.btn_scan.config(state="normal", text=ld["scan"])
+        self.records = mapped_records
+        current_time_str = datetime.datetime.now().strftime("%H:%M:%S")
+        if is_contingency:
+            self.lbl_status_msg.config(text=f"{ld['status_contingency']}{current_time_str}", fg="#FF9500")
+        else:
+            self.lbl_status_msg.config(text=f"{ld['status_connected']}{current_time_str} | Response: {execution_time}s", fg="#6E6E73")
+        self.filter_records()
+
+    def filter_records(self):
+        """Filtra los registros adaptándose de forma flexible a los códigos puros de la planta."""
+        search_txt = self.search_var.get().upper().strip()
+        status_filter = self.cmb_status.get().strip()
+        shift_filter = self.cmb_shift.get()
+        view_mode_filter = self.cmb_view_mode.get()
+        
+        # Purgar las filas viejas del Treeview antes de recalcular
+        for item in self.tree.get_children(): 
+            self.tree.delete(item)
+            
+        self.filtered_records = []
+        ld = self.lang_dict[self.current_lang]
+        
+        # Agrupar historial cronológico de números de serie
+        history_by_serial = {}
+        for row in self.records:
+            sn = str(row["Serial"]).strip()
+            if sn not in history_by_serial: 
+                history_by_serial[sn] = []
+            history_by_serial[sn].append(row)
+
+        for sn in history_by_serial: 
+            history_by_serial[sn].sort(key=lambda x: str(x["Timestamp"]))
+
+        target_records = self.records
+        if view_mode_filter in [ld["view_unique"], "Unidades Únicas (Último Estado)"]:
+            target_records = [rows[-1] for rows in history_by_serial.values()]
+
+        # Bucle de segmentación y filtrado analítico por turno
+        for row in target_records:
+            try:
+                time_part = str(row["Timestamp"]).split(" ")[1]
+                h, m, s = map(int, time_part.split(":"))
+                record_time = datetime.time(h, m, s)
+            except Exception: 
+                record_time = datetime.time(0, 0, 0)
+
+            match_shift = True
+            if shift_filter in [ld["shift_1"], "1er Turno"]:
+                if not (datetime.time(6, 0, 0) <= record_time < datetime.time(15, 30, 0)): 
+                    match_shift = False
+            elif shift_filter in [ld["shift_2"], "2do Turno"]:
+                if not (datetime.time(15, 30, 0) <= record_time < datetime.time(23, 54, 0)): 
+                    match_shift = False
+            elif shift_filter in [ld["shift_3"], "3er Turno"]:
+                if not (record_time >= datetime.time(23, 54, 0) or record_time < datetime.time(6, 0, 0)): 
+                    match_shift = False
+
+            # 🌟 LIMPIEZA AGRESIVA: .strip() remueve espacios ocultos de Oracle (ej: "OK   " -> "OK")
+            res_raw = str(row["Result"]).upper().strip()
+            is_pass = any(x == res_raw for x in ["OK", "PASS", "0", "APPROVED", "TRUE"])
+            
+            match_status = True
+            if status_filter in ["Pass", "OK"] and not is_pass: 
+                match_status = False
+            elif status_filter in ["Fail", "FAIL"] and is_pass: 
+                match_status = False
+
+            match_text = search_txt in str(row["Serial"]).upper() or search_txt in str(row["Station"]).upper()
+
+            if match_shift and match_status and match_text:
+                self.filtered_records.append(row)
+
+        # Cómputo del indicador analítico FPY (First Pass Yield)
+        fpy_rate = None
+        if self.filtered_records:
+            unique_serials = set(r["Serial"] for r in self.filtered_records)
+            fpy_pass = 0
+            for sn in unique_serials:
+                full_history = history_by_serial.get(sn, [])
+                if full_history:
+                    first_res = str(full_history[0]["Result"]).upper().strip()
+                    if any(x == first_res for x in ["OK", "PASS", "0", "APPROVED"]):
+                        fpy_pass += 1
+            fpy_rate = round((fpy_pass / len(unique_serials)) * 100, 2)
+
+        # Extraer totales finales de producción del lote filtrado
+        total_pass = sum(1 for r in self.filtered_records if any(x == str(r["Result"]).upper().strip() for x in ["OK", "PASS", "0", "APPROVED"]))
+        total_fail = len(self.filtered_records) - total_pass
+        
+        self.update_dashboard_metrics(total_pass, total_fail, fpy_rate)
+        self.refresh_chart(total_pass, total_fail)
+
+        # Generar diccionario para el Diagrama de Pareto de Causa Raíz
+        failure_counts = {}
+        for r in self.filtered_records:
+            res_c = str(r["Result"]).upper().strip()
+            if not any(x == res_c for x in ["OK", "PASS", "0", "APPROVED"]):
+                st = str(r["Station"]).strip()
+                failure_counts[st] = failure_counts.get(st, 0) + 1
+        self.top_failures = sorted(failure_counts.items(), key=lambda x: x[1], reverse=True)
+        self.refresh_pareto_chart()
+
+        # Inyectar físicamente las filas limpias en el Treeview principal
+        for row in self.filtered_records[:1000]:
+            self.tree.insert("", "end", values=(
+                str(row["Serial"]), str(row["Station"]), str(row["Test"]), str(row["Result"]), str(row["Timestamp"]), str(row["User"])
+            ))
+
+        """Filtra los registros adaptándose de forma flexible a los códigos puros de la planta."""
+        search_txt = self.search_var.get().upper().strip()
+        status_filter = self.cmb_status.get()
+        shift_filter = self.cmb_shift.get()
+        view_mode_filter = self.cmb_view_mode.get()
+        
+        # Purgar las filas viejas del Treeview antes de recalcular
+        for item in self.tree.get_children(): 
+            self.tree.delete(item)
+            
+        self.filtered_records = []
+        ld = self.lang_dict[self.current_lang]
+        
+        # Agrupar historial cronológico de números de serie
+        history_by_serial = {}
+        for row in self.records:
+            sn = str(row["Serial"]).strip()
+            if sn not in history_by_serial: 
+                history_by_serial[sn] = []
+            history_by_serial[sn].append(row)
+
+        for sn in history_by_serial: 
+            history_by_serial[sn].sort(key=lambda x: str(x["Timestamp"]))
+
+        target_records = self.records
+        if view_mode_filter in [ld["view_unique"], "Unidades Únicas (Último Estado)"]:
+            target_records = [rows[-1] for rows in history_by_serial.values()]
+
+        # Bucle de segmentación y filtrado analítico por turno
+        for row in target_records:
+            try:
+                time_part = str(row["Timestamp"]).split(" ")
+                h, m, s = map(int, time_part.split(":"))
+                record_time = datetime.time(h, m, s)
+            except Exception: 
+                record_time = datetime.time(0, 0, 0)
+
+            match_shift = True
+            if shift_filter in [ld["shift_1"], "1er Turno"]:
+                if not (datetime.time(6, 0, 0) <= record_time < datetime.time(15, 30, 0)): 
+                    match_shift = False
+            elif shift_filter in [ld["shift_2"], "2do Turno"]:
+                if not (datetime.time(15, 30, 0) <= record_time < datetime.time(23, 54, 0)): 
+                    match_shift = False
+            elif shift_filter in [ld["shift_3"], "3er Turno"]:
+                if not (record_time >= datetime.time(23, 54, 0) or record_time < datetime.time(6, 0, 0)): 
+                    match_shift = False
+
+            match_status = True
+            res_raw = str(row["Result"]).upper().strip()
+            is_pass = any(x in res_raw for x in ["OK", "PASS", "0", "APPROVED", "TRUE"])
+            
+            if status_filter in ["Pass", "OK"] and not is_pass: 
+                match_status = False
+            elif status_filter in ["Fail", "FAIL"] and is_pass: 
+                match_status = False
+
+            match_text = search_txt in str(row["Serial"]).upper() or search_txt in str(row["Station"]).upper()
+
+            if match_shift and match_status and match_text:
+                self.filtered_records.append(row)
+
+        # Cómputo del indicador analítico FPY (First Pass Yield)
+        fpy_rate = None
+        if self.filtered_records:
+            unique_serials = set(r["Serial"] for r in self.filtered_records)
+            fpy_pass = 0
+            for sn in unique_serials:
+                full_history = history_by_serial.get(sn, [])
+                if full_history:
+                    first_res = str(full_history["Result"]).upper().strip()
+                    if any(x in first_res for x in ["OK", "PASS", "0", "APPROVED"]):
+                        fpy_pass += 1
+            fpy_rate = round((fpy_pass / len(unique_serials)) * 100, 2)
+
+        # Extraer totales finales de producción del lote filtrado
+        total_pass = sum(1 for r in self.filtered_records if any(x in str(r["Result"]).upper() for x in ["OK", "PASS", "0", "APPROVED"]))
+        total_fail = len(self.filtered_records) - total_pass
+        
+        self.update_dashboard_metrics(total_pass, total_fail, fpy_rate)
+        self.refresh_chart(total_pass, total_fail)
+
+        # Generar diccionario para el Diagrama de Pareto de Causa Raíz
+        failure_counts = {}
+        for r in self.filtered_records:
+            res_c = str(r["Result"]).upper()
+            if not any(x in res_c for x in ["OK", "PASS", "0", "APPROVED"]):
+                st = str(r["Station"])
+                failure_counts[st] = failure_counts.get(st, 0) + 1
+        self.top_failures = sorted(failure_counts.items(), key=lambda x: x, reverse=True)
+        self.refresh_pareto_chart()
+
+        # Inyectar físicamente las filas limpias en el Treeview principal
+        for row in self.filtered_records[:1000]:
+            self.tree.insert("", "end", values=(
+                str(row["Serial"]), str(row["Station"]), str(row["Test"]), str(row["Result"]), str(row["Timestamp"]), str(row["User"])
+            ))
+
+        """Filtra los registros adaptándose de forma flexible a los códigos puros de la planta."""
+        search_txt = self.search_var.get().upper().strip()
+        status_filter = self.cmb_status.get()
+        shift_filter = self.cmb_shift.get()
+        view_mode_filter = self.cmb_view_mode.get()
+        
+        # Purgar las filas viejas del Treeview antes de recalcular
+        for item in self.tree.get_children(): 
+            self.tree.delete(item)
+            
+        self.filtered_records = []
+        ld = self.lang_dict[self.current_lang]
+        
+        # Agrupar historial cronológico de números de serie
+        history_by_serial = {}
+        for row in self.records:
+            sn = str(row["Serial"]).strip()
+            if sn not in history_by_serial: 
+                history_by_serial[sn] = []
+            history_by_serial[sn].append(row)
+
+        for sn in history_by_serial: 
+            history_by_serial[sn].sort(key=lambda x: str(x["Timestamp"]))
+
+        target_records = self.records
+        if view_mode_filter in [ld["view_unique"], "Unidades Únicas (Último Estado)"]:
+            target_records = [rows[-1] for rows in history_by_serial.values()]
+
+        # Bucle de segmentación y filtrado analítico por turno
+        for row in target_records:
+            try:
+                time_part = str(row["Timestamp"]).split(" ")
+                h, m, s = map(int, time_part.split(":"))
+                record_time = datetime.time(h, m, s)
+            except Exception: 
+                record_time = datetime.time(0, 0, 0)
+
+            match_shift = True
+            if shift_filter in [ld["shift_1"], "1er Turno"]:
+                if not (datetime.time(6, 0, 0) <= record_time < datetime.time(15, 30, 0)): 
+                    match_shift = False
+            elif shift_filter in [ld["shift_2"], "2do Turno"]:
+                if not (datetime.time(15, 30, 0) <= record_time < datetime.time(23, 54, 0)): 
+                    match_shift = False
+            elif shift_filter in [ld["shift_3"], "3er Turno"]:
+                if not (record_time >= datetime.time(23, 54, 0) or record_time < datetime.time(6, 0, 0)): 
+                    match_shift = False
+
+            match_status = True
+            res_raw = str(row["Result"]).upper().strip()
+            is_pass = any(x in res_raw for x in ["OK", "PASS", "0", "APPROVED", "TRUE"])
+            
+            if status_filter in ["Pass", "OK"] and not is_pass: 
+                match_status = False
+            elif status_filter in ["Fail", "FAIL"] and is_pass: 
+                match_status = False
+
+            match_text = search_txt in str(row["Serial"]).upper() or search_txt in str(row["Station"]).upper()
+
+            if match_shift and match_status and match_text:
+                self.filtered_records.append(row)
+
+        # Cómputo del indicador analítico FPY (First Pass Yield)
+        fpy_rate = None
+        if self.filtered_records:
+            unique_serials = set(r["Serial"] for r in self.filtered_records)
+            fpy_pass = 0
+            for sn in unique_serials:
+                full_history = history_by_serial.get(sn, [])
+                if full_history:
+                    first_res = str(full_history["Result"]).upper().strip()
+                    if any(x in first_res for x in ["OK", "PASS", "0", "APPROVED"]):
+                        fpy_pass += 1
+            fpy_rate = round((fpy_pass / len(unique_serials)) * 100, 2)
+
+        # Extraer totales finales de producción del lote filtrado
+        total_pass = sum(1 for r in self.filtered_records if any(x in str(r["Result"]).upper() for x in ["OK", "PASS", "0", "APPROVED"]))
+        total_fail = len(self.filtered_records) - total_pass
+        
+        self.update_dashboard_metrics(total_pass, total_fail, fpy_rate)
+        self.refresh_chart(total_pass, total_fail)
+
+        # Generar diccionario para el Diagrama de Pareto de Causa Raíz
+        failure_counts = {}
+        for r in self.filtered_records:
+            res_c = str(r["Result"]).upper()
+            if not any(x in res_c for x in ["OK", "PASS", "0", "APPROVED"]):
+                st = str(r["Station"])
+                failure_counts[st] = failure_counts.get(st, 0) + 1
+        self.top_failures = sorted(failure_counts.items(), key=lambda x: x, reverse=True)
+        self.refresh_pareto_chart()
+
+        # Inyectar físicamente las filas limpias en el Treeview principal
+        for row in self.filtered_records[:1000]:
+            self.tree.insert("", "end", values=(
+                str(row["Serial"]), str(row["Station"]), str(row["Test"]), str(row["Result"]), str(row["Timestamp"]), str(row["User"])
+            ))
+
+        """Filtra los registros adaptándose de forma flexible a los códigos de la planta."""
+        search_txt = self.search_var.get().upper().strip()
+        status_filter = self.cmb_status.get()
+        shift_filter = self.cmb_shift.get()
+        view_mode_filter = self.cmb_view_mode.get()
+        
+        for item in self.tree.get_children(): 
+            self.tree.delete(item)
+            
+        self.filtered_records = []
+        ld = self.lang_dict[self.current_lang]
+        
+        history_by_serial = {}
+        for row in self.records:
+            sn = row["Serial"].strip()
+            if sn not in history_by_serial: 
+                history_by_serial[sn] = []
+            history_by_serial[sn].append(row)
+
+        for sn in history_by_serial: 
+            history_by_serial[sn].sort(key=lambda x: x["Timestamp"])
+
+        target_records = self.records
+        if view_mode_filter in [ld["view_unique"], "Unidades Únicas (Último Estado)"]:
+            target_records = [rows[-1] for rows in history_by_serial.values()]
+
+        for row in target_records:
+            try:
+                time_part = row["Timestamp"].split(" ")
+                h, m, s = map(int, time_part[1].split(":"))
+                record_time = datetime.time(h, m, s)
+            except Exception: 
+                record_time = datetime.time(0, 0, 0)
+
+            match_shift = True
+            if shift_filter in [ld["shift_1"], "1er Turno"]:
+                if not (datetime.time(6, 0, 0) <= record_time < datetime.time(15, 30, 0)): 
+                    match_shift = False
+            elif shift_filter in [ld["shift_2"], "2do Turno"]:
+                if not (datetime.time(15, 30, 0) <= record_time < datetime.time(23, 54, 0)): 
+                    match_shift = False
+            elif shift_filter in [ld["shift_3"], "3er Turno"]:
+                if not (record_time >= datetime.time(23, 54, 0) or record_time < datetime.time(6, 0, 0)): 
+                    match_shift = False
+
+            match_status = True
+            res_raw = str(row["Result"]).upper().strip()
+            is_pass = any(x in res_raw for x in ["OK", "PASS", "0", "APPROVED", "TRUE"])
+            
+            if status_filter in ["Pass", "OK"] and not is_pass: 
+                match_status = False
+            elif status_filter in ["Fail", "FAIL"] and is_pass: 
+                match_status = False
+
+            match_text = search_txt in row["Serial"].upper() or search_txt in row["Station"].upper()
+
+            if match_shift and match_status and match_text:
+                self.filtered_records.append(row)
+
+        fpy_rate = None
+        if self.filtered_records:
+            unique_serials = set(r["Serial"] for r in self.filtered_records)
+            fpy_pass = 0
+            for sn in unique_serials:
+                full_history = history_by_serial.get(sn, [])
+                if full_history:
+                    first_res = str(full_history[0]["Result"]).upper().strip()
+                    if any(x in first_res for x in ["OK", "PASS", "0", "APPROVED"]):
+                        fpy_pass += 1
+            fpy_rate = round((fpy_pass / len(unique_serials)) * 100, 2)
+
+        total_pass = sum(1 for r in self.filtered_records if any(x in str(r["Result"]).upper() for x in ["OK", "PASS", "0", "APPROVED"]))
+        total_fail = len(self.filtered_records) - total_pass
+        
+        self.update_dashboard_metrics(total_pass, total_fail, fpy_rate)
+        self.refresh_chart(total_pass, total_fail)
+
+        failure_counts = {}
+        for r in self.filtered_records:
+            res_c = str(r["Result"]).upper()
+            if not any(x in res_c for x in ["OK", "PASS", "0", "APPROVED"]):
+                st = r["Station"]
+                failure_counts[st] = failure_counts.get(st, 0) + 1
+        self.top_failures = sorted(failure_counts.items(), key=lambda x: x[1], reverse=True)
+        self.refresh_pareto_chart()
+
+        for row in self.filtered_records[:1000]:
+            self.tree.insert("", "end", values=(
+                row["Serial"], row["Station"], row["Test"], row["Result"], row["Timestamp"], row["User"]
+            ))
+
+
+    # ======================================================
+    # DASHBOARD DIARIO AUTÓNOMO POR TARJETAS CON FILTROS INTEGRADOS
+    # ======================================================
+
+    def open_daily_dashboard_window(self):
+        """Abre una ventana ejecutiva independiente con barra de filtros visible y selectores limpios."""
+        if hasattr(self, 'dash_win_active') and self.dash_win_active.winfo_exists():
+            self.dash_win_active.lift()
+            return
+        ld = self.lang_dict[self.current_lang]
+        t = self.themes["light"]
+
+        self.dash_win_active = tk.Toplevel(self.root)
+        dash_win = self.dash_win_active
+        dash_win.title(ld["dash_cards_title"])
+        dash_win.geometry("1240x790")
+        dash_win.config(bg=t["window"])
+
+        # Barra de herramientas superior flotante expandida
+        filter_bar = tk.Frame(dash_win, bg=t["surface"], height=74, bd=1, relief="solid", highlightbackground=t["border"])
+        filter_bar.pack(fill="x", side="top", ipady=4)
+
+        tk.Label(filter_bar, text="Daily SPC Cards", font=("Segoe UI", 11, "bold"), bg=t["surface"], fg=t["accent"]).pack(side="left", padx=15, pady=15)
+
+        cmb_dash_bu = ttk.Combobox(filter_bar, font=("Segoe UI", 10), state="readonly", width=6)
+        cmb_dash_bu["values"] = ["SUR", "NFF", "IRR"]
+        cmb_dash_bu.set(self.cmb_bu.get())
+        cmb_dash_bu.pack(side="left", padx=6, pady=15)
+
+        dash_start = DateEntry(filter_bar, date_pattern="yyyy-mm-dd", font=("Segoe UI", 9), width=11)
+        dash_start.set_date(self.date_start.get_date())
+        dash_start.pack(side="left", padx=6, pady=15)
+
+        dash_end = DateEntry(filter_bar, date_pattern="yyyy-mm-dd", font=("Segoe UI", 9), width=11)
+        dash_end.set_date(self.date_end.get_date())
+        dash_end.pack(side="left", padx=6, pady=15)
+
+        cmb_dash_shift = ttk.Combobox(filter_bar, font=("Segoe UI", 10), state="readonly", width=10)
+        cmb_dash_shift["values"] = ["Todos", "1er Turno", "2do Turno", "3er Turno"]
+        cmb_dash_shift.set(self.cmb_shift.get())
+        cmb_dash_shift.pack(side="left", padx=6, pady=15)
+
+        cmb_dash_status = ttk.Combobox(filter_bar, font=("Segoe UI", 10), state="readonly", width=9)
+        cmb_dash_status["values"] = ["Todos", "Pass", "Fail"]
+        cmb_dash_status.set(self.cmb_status.get())
+        cmb_dash_status.pack(side="left", padx=6, pady=15)
+
+        btn_calc = tk.Button(filter_bar, text="Calcular", font=("Segoe UI", 10, "bold"), bg=t["accent"], fg="#FFFFFF", padx=16, pady=6, bd=0, cursor="hand2")
+        btn_calc.pack(side="left", padx=15, pady=12)
+
+        outer_frame = tk.Frame(dash_win, bg=t["window"])
+        outer_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        canvas = tk.Canvas(outer_frame, bg=t["window"], highlightthickness=0)
+        h_scroll = ttk.Scrollbar(outer_frame, orient="horizontal", command=canvas.xview)
+        canvas.pack(fill="both", expand=True, side="top")
+        h_scroll.pack(fill="x", side="bottom")
+        canvas.configure(xscrollcommand=h_scroll.set)
+
+        scroll_content = tk.Frame(canvas, bg=t["window"])
+        canvas.create_window((0, 0), window=scroll_content, anchor="nw")
+
+
+        def calculate_and_draw_cards():
+            for widget in scroll_content.winfo_children(): 
+                widget.destroy()
+                
+            bu_sel = cmb_dash_bu.get()
+            f_ini = dash_start.get_date().strftime('%Y-%m-%d')
+            f_fin = dash_end.get_date().strftime('%Y-%m-%d')
+            shift_sel = cmb_dash_shift.get()
+            status_sel = cmb_dash_status.get()
+
+            estaciones = {
+                "SUR": ['MSRSFPREPARE', 'MSRSFPREPARE2', 'MSRSFFCT', 'MSRSFFCT2', 'MSRSFPROVISION', 'MSRSFREIMAGE', 'MSRSFREIMAGE2', 'MSRSFREIMAGE3', 'MSRSFROLLBACK', 'MSRSFROLLBACK2', 'MSRSFROLLBACK3'],
+                "NFF": ['MSRSCPREPARE', 'MSRSCFT', 'MSRSCPROVISION', 'MSRSCREIMAGE', 'MSRSCREIMAGE2', 'MSRSCROLLBACK'],
+                "IRR": ['MSRIRRPREPARE', 'MSRIRRPREPARE2', 'MSRIRRFCT', 'MSRIRRFCT2', 'MSRIRRFCT3', 'MSRIRRPROVISION', 'MSRIRRREIMAGE', 'MSRIRRREIMAGE2', 'MSRIRRREIMAGE3', 'MSRIRRROLLBACK', 'MSRIRRROLLBACK2', 'MSRIRRROLLBACK3']
+            }.get(bu_sel, [])
+
+            daily_map = {}
+            try:
+                placeholders = ",".join(["?"] * len(estaciones))
+                query_local = f"SELECT datetime, station, result FROM server_logs WHERE bu=? AND station IN ({placeholders}) AND SUBSTR(datetime,1,10) BETWEEN ? AND ?"
+                self.cursor_local.execute(query_local, [bu_sel] + estaciones + [f_ini, f_fin])
+                db_rows = self.cursor_local.fetchall()
+                
+                for r in db_rows:
+                    if not r or len(r) < 3: continue
+                    dt_str = str(r[0]).strip()
+                    st_str = str(r[1]).strip()
+                    res_str = str(r[2]).strip().upper()
+                    
+                    if " " not in dt_str: continue
+                    time_parts = dt_str.split(" ")
+                    date_key = time_parts[0]
+                    hora_raw = time_parts[1]
+                    
+                    try:
+                        h, m, s = map(int, hora_raw.split(":"))
+                        rec_time = datetime.time(h, m, s)
+                    except Exception: 
+                        rec_time = datetime.time(0, 0, 0)
+
+                    m_s = True
+                    if shift_sel in [ld["shift_1"], "1er Turno"]:
+                        if not (datetime.time(6, 0, 0) <= rec_time < datetime.time(15, 30, 0)): m_s = False
+                    elif shift_sel in [ld["shift_2"], "2do Turno"]:
+                        if not (datetime.time(15, 30, 0) <= rec_time < datetime.time(23, 54, 0)): m_s = False
+                    elif shift_sel in [ld["shift_3"], "3er Turno"]:
+                        if not (rec_time >= datetime.time(23, 54, 0) or rec_time < datetime.time(6, 0, 0)): m_s = False
+
+                    # 🌟 FILTRADO TOLERANTE SIN ESPACIOS OCULTOS
+                    is_p = any(x == res_str for x in ["OK", "PASS", "0", "APPROVED", "TRUE"])
+                    m_st = True
+                    if status_sel in ["Pass", "Aprobados"] and not is_p: m_st = False
+                    elif status_sel in ["Fail", "Fallados"] and is_p: m_st = False
+
+                    if m_s and m_st:
+                        if date_key not in daily_map: 
+                            daily_map[date_key] = {}
+                        if st_str not in daily_map[date_key]: 
+                            daily_map[date_key][st_str] = {"input": 0, "failed": 0, "pass": 0}
+                        
+                        daily_map[date_key][st_str]["input"] += 1
+                        if is_p: daily_map[date_key][st_str]["pass"] += 1
+                        else: daily_map[date_key][st_str]["failed"] += 1
+            except Exception as ex: 
+                print(f"Error procesando lote local: {ex}")
+
+            sorted_dates = sorted(daily_map.keys(), reverse=True)
+            if not sorted_dates:
+                tk.Label(scroll_content, text="[ SIN REGISTROS EN ESTE RANGO ]", font=("Segoe UI", 11, "bold"), bg=t["window"], fg=t["muted"]).pack(padx=50, pady=50)
+                canvas.configure(scrollregion=canvas.bbox("all"))
+                return
+
+            for col_idx, date_str in enumerate(sorted_dates):
+                day_card = tk.Frame(scroll_content, bg=t["surface"], bd=1, relief="solid", width=310, height=590, padx=2, pady=2)
+                day_card.grid(row=0, column=col_idx, padx=14, pady=5, sticky="nsew")
+                day_card.grid_propagate(False)
+
+                header_day = tk.Frame(day_card, bg="#2E2E3A", height=34)
+                header_day.pack(fill="x", side="top")
+                tk.Label(header_day, text=date_str, font=("Segoe UI", 10, "bold"), bg="#2E2E3A", fg="#FFFFFF").pack(side="left", padx=10, pady=5)
+
+                sub_header = tk.Frame(day_card, bg=t["surface_2"], height=24)
+                sub_header.pack(fill="x", side="top")
+                tk.Label(sub_header, text="Station", font=("Segoe UI", 8, "bold"), bg=t["surface_2"], width=14, anchor="w").pack(side="left", padx=(10, 0))
+                tk.Label(sub_header, text="Input", font=("Segoe UI", 8, "bold"), bg=t["surface_2"], width=5).pack(side="left")
+                tk.Label(sub_header, text="Failed", font=("Segoe UI", 8, "bold"), bg=t["surface_2"], width=5).pack(side="left")
+                tk.Label(sub_header, text="Pass(%)", font=("Segoe UI", 8, "bold"), bg=t["surface_2"], width=8).pack(side="left")
+
+                rows_scroll_frame = tk.Frame(day_card, bg=t["surface"])
+                rows_scroll_frame.pack(fill="both", expand=True)
+
+                s_list = []
+                for st, m in daily_map[date_str].items():
+                    inp, f = m["input"], m["failed"]
+                    pct = round((m["pass"] / inp) * 100, 2) if inp > 0 else 0.0
+                    s_list.append((st, inp, f, pct))
+                s_list.sort(key=lambda x: x)
+
+                for name, inp_v, f_cnt, pass_p in s_list:
+                    rf = tk.Frame(rows_scroll_frame, height=26, pady=1)
+                    rf.pack(fill="x")
+                    rf.pack_propagate(False)
+                    bg_c = "#FDECEC" if pass_p < 75.0 else ("#FFF4E5" if pass_p < 95.0 else t["surface"])
+                    fg_s = "#FF3B30" if pass_p < 75.0 else ("#FF9500" if pass_p < 95.0 else "#007AFF")
+                    
+                    rf.config(bg=bg_c)
+                    tk.Label(rf, text=name, font=("Segoe UI", 8), bg=bg_c, fg=fg_s, width=14, anchor="w").pack(side="left", padx=(10, 0))
+                    tk.Label(rf, text=str(inp_v), font=("Segoe UI", 8), bg=bg_c, width=5).pack(side="left")
+                    tk.Label(rf, text=str(f_cnt), font=("Segoe UI", 8, "bold" if f_cnt > 0 else "normal"), bg=bg_c, fg="#FF3B30" if f_cnt > 0 else t["text"], width=5).pack(side="left")
+                    tk.Label(rf, text=f"{pass_p}%", font=("Segoe UI", 8, "bold"), bg=bg_c, width=8).pack(side="left")
+                    tk.Frame(rows_scroll_frame, height=1, bg=t["surface_2"]).pack(fill="x")
+
+            scroll_content.update_idletasks()
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        cmb_dash_bu.bind("<<ComboboxSelected>>", lambda e: calculate_and_draw_cards())
+        cmb_dash_shift.bind("<<ComboboxSelected>>", lambda e: calculate_and_draw_cards())
+        cmb_dash_status.bind("<<ComboboxSelected>>", lambda e: calculate_and_draw_cards())
+        dash_start.bind("<<DateEntrySelected>>", lambda e: calculate_and_draw_cards())
+        dash_end.bind("<<DateEntrySelected>>", lambda e: calculate_and_draw_cards())
+        btn_calc.config(command=calculate_and_draw_cards)
+        calculate_and_draw_cards()
+
+        for widget in scroll_content.winfo_children(): 
+                widget.destroy()
+                
+            bu_sel = cmb_dash_bu.get()
+            f_ini = dash_start.get_date().strftime('%Y-%m-%d')
+            f_fin = dash_end.get_date().strftime('%Y-%m-%d')
+            shift_sel = cmb_dash_shift.get()
+            status_sel = cmb_dash_status.get()
+
+            estaciones = {
+                "SUR": ['MSRSFPREPARE', 'MSRSFPREPARE2', 'MSRSFFCT', 'MSRSFFCT2', 'MSRSFPROVISION', 'MSRSFREIMAGE', 'MSRSFREIMAGE2', 'MSRSFREIMAGE3', 'MSRSFROLLBACK', 'MSRSFROLLBACK2', 'MSRSFROLLBACK3'],
+                "NFF": ['MSRSCPREPARE', 'MSRSCFT', 'MSRSCPROVISION', 'MSRSCREIMAGE', 'MSRSCREIMAGE2', 'MSRSCROLLBACK'],
+                "IRR": ['MSRIRRPREPARE', 'MSRIRRPREPARE2', 'MSRIRRFCT', 'MSRIRRFCT2', 'MSRIRRFCT3', 'MSRIRRPROVISION', 'MSRIRRREIMAGE', 'MSRIRRREIMAGE2', 'MSRIRRREIMAGE3', 'MSRIRRROLLBACK', 'MSRIRRROLLBACK2', 'MSRIRRROLLBACK3']
+            }.get(bu_sel, [])
+
+            daily_map = {}
+            try:
+                placeholders = ",".join(["?"] * len(estaciones))
+                query_local = f"SELECT datetime, station, result FROM server_logs WHERE bu=? AND station IN ({placeholders}) AND SUBSTR(datetime,1,10) BETWEEN ? AND ?"
+                self.cursor_local.execute(query_local, [bu_sel] + estaciones + [f_ini, f_fin])
+                db_rows = self.cursor_local.fetchall()
+                
+                # 🌟 ANALIZADOR DE CADENAS DE TIEMPO SANITIZADO Y RESILIENTE
+                for r in db_rows:
+                    if not r or len(r) < 3: continue
+                    dt_str = str(r[0]).strip()
+                    st_str = str(r[1]).strip()
+                    res_str = str(r[2]).strip().upper()
+                    
+                    if " " not in dt_str: continue
+                    time_parts = dt_str.split(" ")
+                    date_key = time_parts[0]
+                    hora_raw = time_parts[1]
+                    
+                    try:
+                        h, m, s = map(int, hora_raw.split(":"))
+                        rec_time = datetime.time(h, m, s)
+                    except Exception: 
+                        rec_time = datetime.time(0, 0, 0)
+
+                    # 1. Filtro Analítico de Turno Industrial
+                    m_s = True
+                    if shift_sel in [ld["shift_1"], "1er Turno"]:
+                        if not (datetime.time(6, 0, 0) <= rec_time < datetime.time(15, 30, 0)): m_s = False
+                    elif shift_sel in [ld["shift_2"], "2do Turno"]:
+                        if not (datetime.time(15, 30, 0) <= rec_time < datetime.time(23, 54, 0)): m_s = False
+                    elif shift_sel in [ld["shift_3"], "3er Turno"]:
+                        if not (rec_time >= datetime.time(23, 54, 0) or rec_time < datetime.time(6, 0, 0)): m_s = False
+
+                    # 2. Filtro de Estatus Inteligente Tolerante a Mayúsculas/Minúsculas
+                    is_p = any(x in res_str for x in ["OK", "PASS", "0", "APPROVED", "TRUE"])
+                    m_st = True
+                    if status_sel in ["Pass", "Aprobados"] and not is_p: m_st = False
+                    elif status_sel in ["Fail", "Fallados"] and is_p: m_st = False
+
+                    if m_s and m_st:
+                        if date_key not in daily_map: 
+                            daily_map[date_key] = {}
+                        if st_str not in daily_map[date_key]: 
+                            daily_map[date_key][st_str] = {"input": 0, "failed": 0, "pass": 0}
+                        
+                        daily_map[date_key][st_str]["input"] += 1
+                        if is_p: daily_map[date_key][st_str]["pass"] += 1
+                        else: daily_map[date_key][st_str]["failed"] += 1
+            except Exception as ex: 
+                print(f"Error procesando lote local: {ex}")
+
+            sorted_dates = sorted(daily_map.keys(), reverse=True)
+            if not sorted_dates:
+                tk.Label(scroll_content, text="[ SIN REGISTROS EN ESTE RANGO ]", font=("Segoe UI", 11, "bold"), bg=t["window"], fg=t["muted"]).pack(padx=50, pady=50)
+                canvas.configure(scrollregion=canvas.bbox("all"))
+                return
+
+            for col_idx, date_str in enumerate(sorted_dates):
+                day_card = tk.Frame(scroll_content, bg=t["surface"], bd=1, relief="solid", width=310, height=590, padx=2, pady=2)
+                day_card.grid(row=0, column=col_idx, padx=14, pady=5, sticky="nsew")
+                day_card.grid_propagate(False)
+
+                header_day = tk.Frame(day_card, bg="#2E2E3A", height=34)
+                header_day.pack(fill="x", side="top")
+                tk.Label(header_day, text=date_str, font=("Segoe UI", 10, "bold"), bg="#2E2E3A", fg="#FFFFFF").pack(side="left", padx=10, pady=5)
+
+                sub_header = tk.Frame(day_card, bg=t["surface_2"], height=24)
+                sub_header.pack(fill="x", side="top")
+                tk.Label(sub_header, text="Station", font=("Segoe UI", 8, "bold"), bg=t["surface_2"], width=14, anchor="w").pack(side="left", padx=(10, 0))
+                tk.Label(sub_header, text="Input", font=("Segoe UI", 8, "bold"), bg=t["surface_2"], width=5).pack(side="left")
+                tk.Label(sub_header, text="Failed", font=("Segoe UI", 8, "bold"), bg=t["surface_2"], width=5).pack(side="left")
+                tk.Label(sub_header, text="Pass(%)", font=("Segoe UI", 8, "bold"), bg=t["surface_2"], width=8).pack(side="left")
+
+                rows_scroll_frame = tk.Frame(day_card, bg=t["surface"])
+                rows_scroll_frame.pack(fill="both", expand=True)
+
+                s_list = []
+                for st, m in daily_map[date_str].items():
+                    inp, f = m["input"], m["failed"]
+                    pct = round((m["pass"] / inp) * 100, 2) if inp > 0 else 0.0
+                    s_list.append((st, inp, f, pct))
+                s_list.sort(key=lambda x: x)  # Coloca los cuellos de botella críticos (peor Yield) arriba
+
+                for name, inp_v, f_cnt, pass_p in s_list:
+                    rf = tk.Frame(rows_scroll_frame, height=26, pady=1)
+                    rf.pack(fill="x")
+                    rf.pack_propagate(False)
+                    bg_c = "#FDECEC" if pass_p < 75.0 else ("#FFF4E5" if pass_p < 95.0 else t["surface"])
+                    fg_s = "#FF3B30" if pass_p < 75.0 else ("#FF9500" if pass_p < 95.0 else "#007AFF")
+                    
+                    rf.config(bg=bg_c)
+                    tk.Label(rf, text=name, font=("Segoe UI", 8), bg=bg_c, fg=fg_s, width=14, anchor="w").pack(side="left", padx=(10, 0))
+                    tk.Label(rf, text=str(inp_v), font=("Segoe UI", 8), bg=bg_c, width=5).pack(side="left")
+                    tk.Label(rf, text=str(f_cnt), font=("Segoe UI", 8, "bold" if f_cnt > 0 else "normal"), bg=bg_c, fg="#FF3B30" if f_cnt > 0 else t["text"], width=5).pack(side="left")
+                    tk.Label(rf, text=f"{pass_p}%", font=("Segoe UI", 8, "bold"), bg=bg_c, width=8).pack(side="left")
+                    tk.Frame(rows_scroll_frame, height=1, bg=t["surface_2"]).pack(fill="x")
+
+            scroll_content.update_idletasks()
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        cmb_dash_bu.bind("<<ComboboxSelected>>", lambda e: calculate_and_draw_cards())
+        cmb_dash_shift.bind("<<ComboboxSelected>>", lambda e: calculate_and_draw_cards())
+        cmb_dash_status.bind("<<ComboboxSelected>>", lambda e: calculate_and_draw_cards())
+        dash_start.bind("<<DateEntrySelected>>", lambda e: calculate_and_draw_cards())
+        dash_end.bind("<<DateEntrySelected>>", lambda e: calculate_and_draw_cards())
+        btn_calc.config(command=calculate_and_draw_cards)
+        calculate_and_draw_cards()
+
+
+
+        """Abre una ventana ejecutiva independiente con barra de filtros visible y expandida."""
+        if hasattr(self, 'dash_win_active') and self.dash_win_active.winfo_exists():
+            self.dash_win_active.lift()
+            return
+        ld = self.lang_dict[self.current_lang]
+        t = self.themes["light"]
+
+        self.dash_win_active = tk.Toplevel(self.root)
+        dash_win = self.dash_win_active
+        dash_win.title(ld["dash_cards_title"])
+        dash_win.geometry("1240x790")
+        dash_win.config(bg=t["window"])
+
+        filter_bar = tk.Frame(dash_win, bg=t["surface"], height=74, bd=1, relief="solid", highlightbackground=t["border"])
+        filter_bar.pack(fill="x", side="top", ipady=4)
+
+        tk.Label(filter_bar, text="Daily SPC Cards", font=("Segoe UI", 11, "bold"), bg=t["surface"], fg=t["accent"]).pack(side="left", padx=15, pady=15)
+
+        cmb_dash_bu = ttk.Combobox(filter_bar, font=("Segoe UI", 10), state="readonly", width=6)
+        cmb_dash_bu["values"] = ["SUR", "NFF", "IRR"]
+        cmb_dash_bu.set(self.cmb_bu.get())
+        cmb_dash_bu.pack(side="left", padx=6, pady=15)
+
+        dash_start = DateEntry(filter_bar, date_pattern="yyyy-mm-dd", font=("Segoe UI", 9), width=11)
+        dash_start.set_date(self.date_start.get_date())
+        dash_start.pack(side="left", padx=6, pady=15)
+
+        dash_end = DateEntry(filter_bar, date_pattern="yyyy-mm-dd", font=("Segoe UI", 9), width=11)
+        dash_end.set_date(self.date_end.get_date())
+        dash_end.pack(side="left", padx=6, pady=15)
+
+        cmb_dash_shift = ttk.Combobox(filter_bar, font=("Segoe UI", 10), state="readonly", width=10)
+        cmb_dash_shift["values"] = [ld["shift_all"], ld["shift_1"], ld["shift_2"], ld["shift_3"]]
+        cmb_dash_shift.set(self.cmb_shift.get())
+        cmb_dash_shift.pack(side="left", padx=6, pady=15)
+
+        cmb_dash_status = ttk.Combobox(filter_bar, font=("Segoe UI", 10), state="readonly", width=9)
+        cmb_dash_status["values"] = [ld["all"], ld["pass"], ld["fail"]]
+        cmb_dash_status.set(self.cmb_status.get())
+        cmb_dash_status.pack(side="left", padx=6, pady=15)
+
+        btn_calc = tk.Button(filter_bar, text="Calcular", font=("Segoe UI", 10, "bold"), bg=t["accent"], fg="#FFFFFF", padx=16, pady=6, bd=0, cursor="hand2")
+        btn_calc.pack(side="left", padx=15, pady=12)
+
+        outer_frame = tk.Frame(dash_win, bg=t["window"])
+        outer_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        canvas = tk.Canvas(outer_frame, bg=t["window"], highlightthickness=0)
+        h_scroll = ttk.Scrollbar(outer_frame, orient="horizontal", command=canvas.xview)
+        canvas.pack(fill="both", expand=True, side="top")
+        h_scroll.pack(fill="x", side="bottom")
+        canvas.configure(xscrollcommand=h_scroll.set)
+
+        scroll_content = tk.Frame(canvas, bg=t["window"])
+        canvas.create_window((0, 0), window=scroll_content, anchor="nw")
+
+        def calculate_and_draw_cards():
+            for widget in scroll_content.winfo_children(): 
+                widget.destroy()
+                
+            bu_sel = cmb_dash_bu.get()
+            f_ini = dash_start.get_date().strftime('%Y-%m-%d')
+            f_fin = dash_end.get_date().strftime('%Y-%m-%d')
+            shift_sel = cmb_dash_shift.get()
+            status_sel = cmb_dash_status.get()
+
+            estaciones = {
+                "SUR": ['MSRSFPREPARE', 'MSRSFPREPARE2', 'MSRSFFCT', 'MSRSFFCT2', 'MSRSFPROVISION', 'MSRSFREIMAGE', 'MSRSFREIMAGE2', 'MSRSFREIMAGE3', 'MSRSFROLLBACK', 'MSRSFROLLBACK2', 'MSRSFROLLBACK3'],
+                "NFF": ['MSRSCPREPARE', 'MSRSCFT', 'MSRSCPROVISION', 'MSRSCREIMAGE', 'MSRSCREIMAGE2', 'MSRSCROLLBACK'],
+                "IRR": ['MSRIRRPREPARE', 'MSRIRRPREPARE2', 'MSRIRRFCT', 'MSRIRRFCT2', 'MSRIRRFCT3', 'MSRIRRPROVISION', 'MSRIRRREIMAGE', 'MSRIRRREIMAGE2', 'MSRIRRREIMAGE3', 'MSRIRRROLLBACK', 'MSRIRRROLLBACK2', 'MSRIRRROLLBACK3']
+            }.get(bu_sel, [])
+
+            daily_map = {}
+            try:
+                placeholders = ",".join(["?"] * len(estaciones))
+                query_local = f"SELECT datetime, station, result FROM server_logs WHERE bu=? AND station IN ({placeholders}) AND SUBSTR(datetime,1,10) BETWEEN ? AND ?"
+                self.cursor_local.execute(query_local, [bu_sel] + estaciones + [f_ini, f_fin])
+                db_rows = self.cursor_local.fetchall()
+                
+                # 🌟 EXTRAE CADA COLUMNA INDIVIDUAL POR SU ÍNDICE CORREGIDO DE SQLITE (0, 1, 2)
+                for r in db_rows:
+                    if not r or len(r) < 3: continue
+                    dt_str = str(r[0]).strip() if r[0] is not None else ""
+                    st_str = str(r[1]).strip() if r[1] is not None else "UNKNOWN"
+                    res_str = str(r[2]).strip().upper() if r[2] is not None else "FAIL"
+                    
+                    if " " not in dt_str: continue
+                    time_parts = dt_str.split(" ")
+                    date_key = time_parts[0]
+                    hora_raw = time_parts[1]
+                    
+                    try:
+                        h, m, s = map(int, hora_raw.split(":"))
+                        rec_time = datetime.time(h, m, s)
+                    except Exception: 
+                        rec_time = datetime.time(0, 0, 0)
+
+                    m_s = True
+                    if shift_sel in [ld["shift_1"], "1er Turno"]:
+                        if not (datetime.time(6, 0, 0) <= rec_time < datetime.time(15, 30, 0)): m_s = False
+                    elif shift_sel in [ld["shift_2"], "2do Turno"]:
+                        if not (datetime.time(15, 30, 0) <= rec_time < datetime.time(23, 54, 0)): m_s = False
+                    elif shift_sel in [ld["shift_3"], "3er Turno"]:
+                        if not (rec_time >= datetime.time(23, 54, 0) or rec_time < datetime.time(6, 0, 0)): m_s = False
+
+                    is_p = any(x in res_str for x in ["OK", "PASS", "0", "APPROVED", "TRUE"])
+                    m_st = True
+                    if status_sel in ["Pass", "OK"] and not is_p: m_st = False
+                    elif status_sel in ["Fail", "FAIL"] and is_p: m_st = False
+
+                    if m_s and m_st:
+                        if date_key not in daily_map: 
+                            daily_map[date_key] = {}
+                        if st_str not in daily_map[date_key]: 
+                            daily_map[date_key][st_str] = {"input": 0, "failed": 0, "pass": 0}
+                        
+                        daily_map[date_key][st_str]["input"] += 1
+                        if is_p: daily_map[date_key][st_str]["pass"] += 1
+                        else: daily_map[date_key][st_str]["failed"] += 1
+            except Exception as ex: 
+                print(f"Error procesando lote local: {ex}")
+
+            sorted_dates = sorted(daily_map.keys(), reverse=True)
+            if not sorted_dates:
+                tk.Label(scroll_content, text="[ SIN REGISTROS EN ESTE RANGO ]", font=("Segoe UI", 11, "bold"), bg=t["window"], fg=t["muted"]).pack(padx=50, pady=50)
+                canvas.configure(scrollregion=canvas.bbox("all"))
+                return
+
+            for col_idx, date_str in enumerate(sorted_dates):
+                day_card = tk.Frame(scroll_content, bg=t["surface"], bd=1, relief="solid", width=310, height=590, padx=2, pady=2)
+                day_card.grid(row=0, column=col_idx, padx=14, pady=5, sticky="nsew")
+                day_card.grid_propagate(False)
+
+                header_day = tk.Frame(day_card, bg="#2E2E3A", height=34)
+                header_day.pack(fill="x", side="top")
+                tk.Label(header_day, text=date_str, font=("Segoe UI", 10, "bold"), bg="#2E2E3A", fg="#FFFFFF").pack(side="left", padx=10, pady=5)
+
+                sub_header = tk.Frame(day_card, bg=t["surface_2"], height=24)
+                sub_header.pack(fill="x", side="top")
+                tk.Label(sub_header, text="Station", font=("Segoe UI", 8, "bold"), bg=t["surface_2"], width=14, anchor="w").pack(side="left", padx=(10, 0))
+                tk.Label(sub_header, text="Input", font=("Segoe UI", 8, "bold"), bg=t["surface_2"], width=5).pack(side="left")
+                tk.Label(sub_header, text="Failed", font=("Segoe UI", 8, "bold"), bg=t["surface_2"], width=5).pack(side="left")
+                tk.Label(sub_header, text="Pass(%)", font=("Segoe UI", 8, "bold"), bg=t["surface_2"], width=8).pack(side="left")
+
+                rows_scroll_frame = tk.Frame(day_card, bg=t["surface"])
+                rows_scroll_frame.pack(fill="both", expand=True)
+
+                s_list = []
+                for st, m in daily_map[date_str].items():
+                    inp, f = m["input"], m["failed"]
+                    pct = round((m["pass"] / inp) * 100, 2) if inp > 0 else 0.0
+                    s_list.append((st, inp, f, pct))
+                s_list.sort(key=lambda x: x)
+
+                for name, inp_v, f_cnt, pass_p in s_list:
+                    rf = tk.Frame(rows_scroll_frame, height=26, pady=1)
+                    rf.pack(fill="x")
+                    rf.pack_propagate(False)
+                    bg_c = "#FDECEC" if pass_p < 75.0 else ("#FFF4E5" if pass_p < 95.0 else t["surface"])
+                    fg_s = "#FF3B30" if pass_p < 75.0 else ("#FF9500" if pass_p < 95.0 else "#007AFF")
+                    
+                    rf.config(bg=bg_c)
+                    tk.Label(rf, text=name, font=("Segoe UI", 8), bg=bg_c, fg=fg_s, width=14, anchor="w").pack(side="left", padx=(10, 0))
+                    tk.Label(rf, text=str(inp_v), font=("Segoe UI", 8), bg=bg_c, width=5).pack(side="left")
+                    tk.Label(rf, text=str(f_cnt), font=("Segoe UI", 8, "bold" if f_cnt > 0 else "normal"), bg=bg_c, fg="#FF3B30" if f_cnt > 0 else t["text"], width=5).pack(side="left")
+                    tk.Label(rf, text=f"{pass_p}%", font=("Segoe UI", 8, "bold"), bg=bg_c, width=8).pack(side="left")
+                    tk.Frame(rows_scroll_frame, height=1, bg=t["surface_2"]).pack(fill="x")
+
+            scroll_content.update_idletasks()
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        cmb_dash_bu.bind("<<ComboboxSelected>>", lambda e: calculate_and_draw_cards())
+        cmb_dash_shift.bind("<<ComboboxSelected>>", lambda e: calculate_and_draw_cards())
+        cmb_dash_status.bind("<<ComboboxSelected>>", lambda e: calculate_and_draw_cards())
+        dash_start.bind("<<DateEntrySelected>>", lambda e: calculate_and_draw_cards())
+        dash_end.bind("<<DateEntrySelected>>", lambda e: calculate_and_draw_cards())
+        btn_calc.config(command=calculate_and_draw_cards)
+        calculate_and_draw_cards()
+ 
+
+        """Abre una ventana independiente con barra de filtros expandida y procesamiento de tiempo."""
+        if hasattr(self, 'dash_win_active') and self.dash_win_active.winfo_exists():
+            self.dash_win_active.lift()
+            return
+        ld = self.lang_dict[self.current_lang]
+        t = self.themes["light"]
+
+        self.dash_win_active = tk.Toplevel(self.root)
+        dash_win = self.dash_win_active
+        dash_win.title(ld["dash_cards_title"])
+        dash_win.geometry("1240x790")
+        dash_win.config(bg=t["window"])
+
+        filter_bar = tk.Frame(dash_win, bg=t["surface"], height=74, bd=1, relief="solid", highlightbackground=t["border"])
+        filter_bar.pack(fill="x", side="top", ipady=4)
+
+        tk.Label(filter_bar, text="Daily SPC Cards", font=("Segoe UI", 11, "bold"), bg=t["surface"], fg=t["accent"]).pack(side="left", padx=15, pady=15)
+
+        cmb_dash_bu = ttk.Combobox(filter_bar, font=("Segoe UI", 10), state="readonly", width=6)
+        cmb_dash_bu["values"] = ["SUR", "NFF", "IRR"]
+        cmb_dash_bu.set(self.cmb_bu.get())
+        cmb_dash_bu.pack(side="left", padx=4, pady=15)
+
+        dash_start = DateEntry(filter_bar, date_pattern="yyyy-mm-dd", font=("Segoe UI", 9), width=11)
+        dash_start.set_date(self.date_start.get_date())
+        dash_start.pack(side="left", padx=4, pady=15)
+
+        dash_end = DateEntry(filter_bar, date_pattern="yyyy-mm-dd", font=("Segoe UI", 9), width=11)
+        dash_end.set_date(self.date_end.get_date())
+        dash_end.pack(side="left", padx=4, pady=15)
+
+        cmb_dash_shift = ttk.Combobox(filter_bar, font=("Segoe UI", 10), state="readonly", width=10)
+        cmb_dash_shift["values"] = [ld["shift_all"], ld["shift_1"], ld["shift_2"], ld["shift_3"]]
+        cmb_dash_shift.set(self.cmb_shift.get())
+        cmb_dash_shift.pack(side="left", padx=4, pady=15)
+
+        cmb_dash_status = ttk.Combobox(filter_bar, font=("Segoe UI", 10), state="readonly", width=9)
+        cmb_dash_status["values"] = [ld["all"], ld["pass"], ld["fail"]]
+        cmb_dash_status.set(self.cmb_status.get())
+        cmb_dash_status.pack(side="left", padx=4, pady=15)
+
+        btn_calc = tk.Button(filter_bar, text="Calcular", font=("Segoe UI", 10, "bold"), bg=t["accent"], fg="#FFFFFF", padx=16, pady=6, bd=0, cursor="hand2")
+        btn_calc.pack(side="left", padx=15, pady=12)
+
+        outer_frame = tk.Frame(dash_win, bg=t["window"])
+        outer_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        canvas = tk.Canvas(outer_frame, bg=t["window"], highlightthickness=0)
+        h_scroll = ttk.Scrollbar(outer_frame, orient="horizontal", command=canvas.xview)
+        canvas.pack(fill="both", expand=True, side="top")
+        h_scroll.pack(fill="x", side="bottom")
+        canvas.configure(xscrollcommand=h_scroll.set)
+
+        scroll_content = tk.Frame(canvas, bg=t["window"])
+        canvas.create_window((0, 0), window=scroll_content, anchor="nw")
+
+
+        def calculate_and_draw_cards():
+            """Calcula localmente y dibuja las tarjetas al cambiar cualquier filtro de la ventana."""
+            for widget in scroll_content.winfo_children(): 
+                widget.destroy()
+                
+            bu_sel = cmb_dash_bu.get()
+            f_ini = dash_start.get_date().strftime('%Y-%m-%d')
+            f_fin = dash_end.get_date().strftime('%Y-%m-%d')
+            shift_sel = cmb_dash_shift.get()
+            status_sel = cmb_dash_status.get()
+
+            estaciones = {
+                "SUR": ['MSRSFPREPARE', 'MSRSFPREPARE2', 'MSRSFFCT', 'MSRSFFCT2', 'MSRSFPROVISION', 'MSRSFREIMAGE', 'MSRSFREIMAGE2', 'MSRSFREIMAGE3', 'MSRSFROLLBACK', 'MSRSFROLLBACK2', 'MSRSFROLLBACK3'],
+                "NFF": ['MSRSCPREPARE', 'MSRSCFT', 'MSRSCPROVISION', 'MSRSCREIMAGE', 'MSRSCREIMAGE2', 'MSRSCROLLBACK'],
+                "IRR": ['MSRIRRPREPARE', 'MSRIRRPREPARE2', 'MSRIRRFCT', 'MSRIRRFCT2', 'MSRIRRFCT3', 'MSRIRRPROVISION', 'MSRIRRREIMAGE', 'MSRIRRREIMAGE2', 'MSRIRRREIMAGE3', 'MSRIRRROLLBACK', 'MSRIRRROLLBACK2', 'MSRIRRROLLBACK3']
+            }.get(bu_sel, [])
+
+            daily_map = {}
+            try:
+                placeholders = ",".join(["?"] * len(estaciones))
+                query_local = f"SELECT datetime, station, result FROM server_logs WHERE bu=? AND station IN ({placeholders}) AND SUBSTR(datetime,1,10) BETWEEN ? AND ?"
+                self.cursor_local.execute(query_local, [bu_sel] + estaciones + [f_ini, f_fin])
+                db_rows = self.cursor_local.fetchall()
+                
+                for r in db_rows:
+                    if not r or len(r) < 3: continue
+                    dt_str = str(r[0]).strip()
+                    st_str = str(r[1]).strip()
+                    res_str = str(r[2]).strip().upper()
+                    
+                    if " " not in dt_str: continue
+                    time_parts = dt_str.split(" ")
+                    date_key = time_parts[0]
+                    hora_raw = time_parts[1]
+                    
+                    try:
+                        h, m, s = map(int, hora_raw.split(":"))
+                        rec_time = datetime.time(h, m, s)
+                    except Exception: 
+                        rec_time = datetime.time(0, 0, 0)
+
+                    m_s = True
+                    if shift_sel in [ld["shift_1"], "1er Turno"]:
+                        if not (datetime.time(6, 0, 0) <= rec_time < datetime.time(15, 30, 0)): m_s = False
+                    elif shift_sel in [ld["shift_2"], "2do Turno"]:
+                        if not (datetime.time(15, 30, 0) <= rec_time < datetime.time(23, 54, 0)): m_s = False
+                    elif shift_sel in [ld["shift_3"], "3er Turno"]:
+                        if not (rec_time >= datetime.time(23, 54, 0) or rec_time < datetime.time(6, 0, 0)): m_s = False
+
+                    is_p = any(x in res_str for x in ["OK", "PASS", "0", "APPROVED", "TRUE"])
+                    m_st = True
+                    if status_sel in ["Pass", "OK"] and not is_p: m_st = False
+                    elif status_sel in ["Fail", "FAIL"] and is_p: m_st = False
+
+                    if m_s and m_st:
+                        if date_key not in daily_map: 
+                            daily_map[date_key] = {}
+                        if st_str not in daily_map[date_key]: 
+                            daily_map[date_key][st_str] = {"input": 0, "failed": 0, "pass": 0}
+                        
+                        daily_map[date_key][st_str]["input"] += 1
+                        if is_p: daily_map[date_key][st_str]["pass"] += 1
+                        else: daily_map[date_key][st_str]["failed"] += 1
+            except Exception as ex: 
+                print(f"Error procesando lote local: {ex}")
+
+            sorted_dates = sorted(daily_map.keys(), reverse=True)
+            if not sorted_dates:
+                tk.Label(scroll_content, text="[ SIN REGISTROS EN ESTE RANGO ]", font=("Segoe UI", 11, "bold"), bg=t["window"], fg=t["muted"]).pack(padx=50, pady=50)
+                canvas.configure(scrollregion=canvas.bbox("all"))
+                return
+
+            for col_idx, date_str in enumerate(sorted_dates):
+                day_card = tk.Frame(scroll_content, bg=t["surface"], bd=1, relief="solid", width=310, height=590, padx=2, pady=2)
+                day_card.grid(row=0, column=col_idx, padx=14, pady=5, sticky="nsew")
+                day_card.grid_propagate(False)
+
+                header_day = tk.Frame(day_card, bg="#2E2E3A", height=34)
+                header_day.pack(fill="x", side="top")
+                tk.Label(header_day, text=date_str, font=("Segoe UI", 10, "bold"), bg="#2E2E3A", fg="#FFFFFF").pack(side="left", padx=10, pady=5)
+
+                sub_header = tk.Frame(day_card, bg=t["surface_2"], height=24)
+                sub_header.pack(fill="x", side="top")
+                tk.Label(sub_header, text="Station", font=("Segoe UI", 8, "bold"), bg=t["surface_2"], width=14, anchor="w").pack(side="left", padx=(10, 0))
+                tk.Label(sub_header, text="Input", font=("Segoe UI", 8, "bold"), bg=t["surface_2"], width=5).pack(side="left")
+                tk.Label(sub_header, text="Failed", font=("Segoe UI", 8, "bold"), bg=t["surface_2"], width=5).pack(side="left")
+                tk.Label(sub_header, text="Pass(%)", font=("Segoe UI", 8, "bold"), bg=t["surface_2"], width=8).pack(side="left")
+
+                rows_scroll_frame = tk.Frame(day_card, bg=t["surface"])
+                rows_scroll_frame.pack(fill="both", expand=True)
+
+                s_list = []
+                for st, m in daily_map[date_str].items():
+                    inp, f = m["input"], m["failed"]
+                    pct = round((m["pass"] / inp) * 100, 2) if inp > 0 else 0.0
+                    s_list.append((st, inp, f, pct))
+                s_list.sort(key=lambda x: x[3])  # Peores estaciones arriba en el tope
+
+                for name, inp_v, f_cnt, pass_p in s_list:
+                    rf = tk.Frame(rows_scroll_frame, height=26, pady=1)
+                    rf.pack(fill="x")
+                    rf.pack_propagate(False)
+                    bg_c = "#FDECEC" if pass_p < 75.0 else ("#FFF4E5" if pass_p < 95.0 else t["surface"])
+                    fg_s = "#FF3B30" if pass_p < 75.0 else ("#FF9500" if pass_p < 95.0 else "#007AFF")
+                    
+                    rf.config(bg=bg_c)
+                    tk.Label(rf, text=name, font=("Segoe UI", 8), bg=bg_c, fg=fg_s, width=14, anchor="w").pack(side="left", padx=(10, 0))
+                    tk.Label(rf, text=str(inp_v), font=("Segoe UI", 8), bg=bg_c, width=5).pack(side="left")
+                    tk.Label(rf, text=str(f_cnt), font=("Segoe UI", 8, "bold" if f_cnt > 0 else "normal"), bg=bg_c, fg="#FF3B30" if f_cnt > 0 else t["text"], width=5).pack(side="left")
+                    tk.Label(rf, text=f"{pass_p}%", font=("Segoe UI", 8, "bold"), bg=bg_c, width=8).pack(side="left")
+                    tk.Frame(rows_scroll_frame, height=1, bg=t["surface_2"]).pack(fill="x")
+
+            scroll_content.update_idletasks()
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        cmb_dash_bu.bind("<<ComboboxSelected>>", lambda e: calculate_and_draw_cards())
+        cmb_dash_shift.bind("<<ComboboxSelected>>", lambda e: calculate_and_draw_cards())
+        cmb_dash_status.bind("<<ComboboxSelected>>", lambda e: calculate_and_draw_cards())
+        dash_start.bind("<<DateEntrySelected>>", lambda e: calculate_and_draw_cards())
+        dash_end.bind("<<DateEntrySelected>>", lambda e: calculate_and_draw_cards())
+        btn_calc.config(command=calculate_and_draw_cards)
+        calculate_and_draw_cards()
+
+
+    def sort_column_data(self, col_key):
+        """Ordena los registros en memoria de forma instantánea de la A a la Z o viceversa."""
+        if not self.filtered_records: return
+        d = not self.sort_directions[col_key]
+        self.sort_directions[col_key] = d
+        k = {"serial":"Serial", "station":"Station", "test":"Test", "result":"Result", "timestamp":"Timestamp"}[col_key]
+        self.filtered_records.sort(key=lambda x: x[k].upper(), reverse=d)
+        for item in self.tree.get_children(): self.tree.delete(item)
+        for r in self.filtered_records[:1000]:
+            self.tree.insert("", "end", values=(r["Serial"], r["Station"], r["Test"], r["Result"], r["Timestamp"], r["User"]))
+
+    def update_dashboard_metrics(self, total_pass, total_fail, fpy_rate=None):
+        """Calcula el rendimiento y restablece las alertas de color en las tarjetas superiores."""
+        tot = total_pass + total_fail
+        yd = round((total_pass / tot) * 100, 2) if tot > 0 else 0.0
+        
+        self.lbl_card_total_val.config(text=str(tot))
+        self.lbl_card_pass_val.config(text=str(total_pass))
+        self.lbl_card_fail_val.config(text=str(total_fail))
+        self.lbl_card_yield_val.config(text=f"{yd}%\n(FPY: {fpy_rate}%)" if fpy_rate else f"{yd}%", font=("Segoe UI", 16 if fpy_rate else 24, "bold"))
+        
+        if tot == 0:
+            self.card_yield.config(bg="#FFFFFF")
+            self.lbl_card_yield_title.config(bg="#FFFFFF", fg="#1D1D1F")
+            self.lbl_card_yield_val.config(bg="#FFFFFF", fg="#1D1D1F")
+        elif yd >= 95.0:
+            self.card_yield.config(bg="#EAF8EF")
+            self.lbl_card_yield_title.config(bg="#EAF8EF", fg="#34C759")
+            self.lbl_card_yield_val.config(bg="#EAF8EF", fg="#34C759")
+        elif yd >= 85.0:
+            self.card_yield.config(bg="#FFF4E5")
+            self.lbl_card_yield_title.config(bg="#FFF4E5", fg="#FF9500")
+            self.lbl_card_yield_val.config(bg="#FFF4E5", fg="#FF9500")
+        else:
+            self.card_yield.config(bg="#FDECEC")
+            self.lbl_card_yield_title.config(bg="#FDECEC", fg="#FF3B30")
+            self.lbl_card_yield_val.config(bg="#FDECEC", fg="#FF3B30")
+
+    def refresh_chart(self, total_pass, total_fail):
+        """Redibuja el gráfico horizontal de barras de distribución de resultados."""
+        self.ax.clear()
+        t = self.themes["light"]
+        self.fig.patch.set_facecolor(t["surface"])
+        self.ax.set_facecolor(t["surface_2"])
+        bars = self.ax.barh(["Pass (OK)", "Fail (FAIL)"], [total_pass, total_fail], color=[t["success"], t["danger"]], height=0.55)
+        self.ax.spines['top'].set_visible(False)
+        self.ax.spines['right'].set_visible(False)
+        self.ax.tick_params(colors=t["text"], labelsize=9)
+        for b in bars: 
+            self.ax.text(b.get_width() + 0.1, b.get_y()+b.get_height()/2, f'{int(b.get_width())}', va='center', fontweight='bold', color=t["text"])
+        self.fig.tight_layout()
+        self.canvas_plot.draw()
+
+    def refresh_pareto_chart(self):
+        """Redibuja el Diagrama de Pareto de Causa Raíz con curva acumulada."""
+        self.ax_pareto_bars.clear()
+        for ax in self.fig_pareto.get_axes():
+            if ax is not self.ax_pareto_bars: ax.remove()
+        t = self.themes["light"]
+        self.fig_pareto.patch.set_facecolor(t["surface"])
+        self.ax_pareto_bars.set_facecolor(t["surface_2"])
+        if not self.top_failures:
+            self.ax_pareto_bars.text(0.5, 0.5, "100% OK", ha='center', va='center', color=t["success"], fontweight='bold')
+            self.ax_pareto_bars.axis('off')
+            self.canvas_pareto.draw()
+            return
+        self.ax_pareto_bars.axis('on')
+        st = [str(x) for x in self.top_failures[:7]]
+        ct = [int(x) for x in self.top_failures[:7]]
+        self.ax_pareto_bars.bar(st, ct, color="#FF9500", width=0.45, edgecolor="#E68200")
+        self.ax_pareto_bars.set_ylabel("Frecuencia (Fallas)", color="#E68200", fontweight="bold", fontsize=9)
+        self.ax_pareto_bars.set_xticklabels(st, rotation=45, ha='right', fontsize=7, color=t["text"])
+        
+        tot = sum(x for x in self.top_failures)
+        ac, s = [], 0
+        for x in self.top_failures[:len(st)]:
+            s += x
+            ac.append((s/tot)*100)
+        ax2 = self.ax_pareto_bars.twinx()
+        ax2.plot(st, ac, color="#007AFF", marker="o", linewidth=1.5, ms=4)
+        ax2.set_ylabel("Porcentaje Acumulado", color="#007AFF", fontweight="bold", fontsize=9)
+        ax2.set_ylim(0, 105)
+        ax2.axhline(80, color=t["danger"], linestyle="--", linewidth=1.2, alpha=0.85)
+        self.ax_pareto_bars.spines['top'].set_visible(False)
+        ax2.spines['top'].set_visible(False)
+        self.fig_pareto.tight_layout()
+        self.canvas_pareto.draw()
+
+
+    def export_to_pdf(self):
+        """Genera un informe ejecutivo formal en formato PDF respetando el modo de vista activo."""
+        if not self.filtered_records: return
+        f = filedialog.asksaveasfilename(defaultextension=".pdf")
+        if not f: return
+        self.fig.savefig("t1.png", dpi=150)
+        self.fig_pareto.savefig("t2.png", dpi=150)
+        doc = SimpleDocTemplate(f, pagesize=letter)
+        s = getSampleStyleSheet()
+        story = [Paragraph("Reporte de Calidad NPI", s['Heading1']), Spacer(1,15), Image("t1.png", width=440, height=160), Spacer(1,15), Image("t2.png", width=440, height=160)]
+        doc.build(story)
+        for p in ["t1.png", "t2.png"]:
+            if os.path.exists(p): os.remove(p)
+        messagebox.showinfo("OK", "PDF OK")
+
+    def apply_theme(self):
+        """Aplica la paleta de colores Claro e inyecta diseño a las tarjetas superiores."""
+        t = self.themes["light"]
+        self.root.config(bg=t["window"])
+        self.app.config(bg=t["window"])
+        self.header.config(bg=t["window"])
+        self.title_container.config(bg=t["window"])
+        self.sidebar.config(bg=t["surface"], bd=1, relief="solid", highlightbackground=t["border"])
+        self.main_container.config(bg=t["window"])
+        self.cards_frame.config(bg=t["window"])
+        self.search_frame.config(bg=t["surface"], bd=1, relief="solid", highlightbackground=t["border"])
+        self.table_frame.config(bg=t["window"])
+        self.chart_frame.config(bg=t["window"])
+        self.pareto_frame.config(bg=t["window"])
+        self.status_bar_frame.config(bg=t["status_bar"])
+        self.lbl_status_msg.config(bg=t["status_bar"], fg=t["muted"])
+        self.txt_search.config(bg=t["surface"], fg=t["text"])
+        
+        # 🌟 DISEÑO PRESTIGIO MAC: Bordes sólidos y fuentes en negrita para KPIs de Planta
+        self.card_total.config(bg=t["card"], bd=1, relief="solid", highlightbackground=t["border"])
+        self.card_yield.config(bg=t["card"], bd=1, relief="solid", highlightbackground=t["border"])
+        self.card_pass.config(bg=t["card"], bd=1, relief="solid", highlightbackground=t["border"])
+        self.card_fail.config(bg=t["card"], bd=1, relief="solid", highlightbackground=t["border"])
+
+        self.lbl_card_total_title.config(bg=t["card"], fg=t["muted"], font=("Segoe UI", 9, "bold"))
+        self.lbl_card_total_val.config(bg=t["card"], fg=t["text"], font=("Segoe UI", 24, "bold"))
+        
+        self.lbl_card_yield_title.config(bg=self.card_yield.cget("bg"), fg=t["muted"], font=("Segoe UI", 9, "bold"))
+        self.lbl_card_yield_val.config(bg=self.card_yield.cget("bg"), fg=t["text"], font=("Segoe UI", 16 if "(FPY:" in self.lbl_card_yield_val.cget("text") else 24, "bold"))
+        
+        self.lbl_card_pass_title.config(bg=t["card"], fg=t["muted"], font=("Segoe UI", 9, "bold"))
+        self.lbl_card_pass_val.config(bg=t["card"], fg=t["success"], font=("Segoe UI", 24, "bold"))
+        
+        self.lbl_card_fail_title.config(bg=t["card"], fg=t["muted"], font=("Segoe UI", 9, "bold"))
+        self.lbl_card_fail_val.config(bg=t["card"], fg=t["danger"], font=("Segoe UI", 24, "bold"))
+
+        self.btn_scan.config(bg=t["accent"], fg="#FFFFFF", activebackground=t["accent_hover"])
+        self.btn_live.config(bg=t["accent"], fg="#FFFFFF")
+        self.btn_export_pdf.config(bg=t["button_secondary"], fg=t["text"], activebackground=t["button_secondary_hover"])
+        self.btn_dash_cards.config(bg=t["button_secondary"], fg=t["text"], activebackground=t["button_secondary_hover"])
+
+    def update_ui_text(self):
+        """Actualiza todos los textos de la interfaz según el idioma activo."""
+        ld = self.lang_dict[self.current_lang]
+        self.lbl_title.config(text=ld["title"])
+        self.lbl_subtitle.config(text=ld["subtitle"])
+        self.lbl_controls.config(text=ld["controls"])
+        self.lbl_date_range.config(text=ld["date_range"])
+        self.lbl_start.config(text=ld["start_date"])
+        self.lbl_end.config(text=ld["end_date"])
+        self.btn_scan.config(text=ld["scan"])
+        self.btn_live.config(text=ld["live_on"] if self.live_mode else ld["live_off"])
+        self.btn_export_pdf.config(text=ld["export_pdf"])
+        self.btn_dash_cards.config(text=ld["btn_dashboard_cards"])
+        self.lbl_card_total_title.config(text=ld["records"].upper())
+        self.lbl_card_yield_title.config(text=ld["yield"].upper())
+        self.lbl_card_pass_title.config(text=ld["pass"].upper())
+        self.lbl_card_fail_title.config(text=ld["fail"].upper())
+        self.lbl_filter_status.config(text=ld["status"])
+        self.lbl_filter_shift.config(text=ld["shift"])
+        self.lbl_view_mode.config(text=ld["view_mode"])
+        self.lbl_table_title.config(text=ld["table_title"])
+        self.lbl_chart_title.config(text=ld["chart_title"])
+        self.lbl_pareto_title.config(text=ld["pareto_title"])
+        self.cmb_status.config(values=[ld["all"], ld["pass"], ld["fail"]]); self.cmb_status.current(0)
+        self.cmb_shift.config(values=[ld["shift_all"], ld["shift_1"], ld["shift_2"], ld["shift_3"]]); self.cmb_shift.current(0)
+        self.cmb_view_mode.config(values=[ld["view_all"], ld["view_unique"]]); self.cmb_view_mode.current(0)
+        self.tree.heading("serial", text=ld["serial"]); self.tree.heading("station", text=ld["model"])
+        self.tree.heading("test", text=ld["test"]); self.tree.heading("result", text=ld["result"]); self.tree.heading("timestamp", text=ld["datetime"])
+
+    def toggle_lang(self):
+        self.current_lang = "ENG" if self.current_lang == "ESP" else "ESP"
+        self.update_ui_text()
+
+    def toggle_live_mode(self):
+        self.live_mode = not self.live_mode
+        self.btn_live.config(text=self.lang_dict[self.current_lang]["live_on"] if self.live_mode else self.lang_dict[self.current_lang]["live_off"])
+
+    def run_live_loop(self):
+        if self.live_mode and not self.is_scanning: self.start_async_load(is_automated=True)
+        self.root.after(30000, self.run_live_loop)
+
+
+# ======================================================
+# PUNTO DE ARRANQUE OFICIAL DE LA APP
+# ======================================================
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = NPIApp(root)
+    root.mainloop()
+
