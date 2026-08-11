@@ -1,0 +1,13 @@
+python -c "
+import os
+env_path = '.env'
+with open(env_path, 'r', encoding='utf-8') as f:
+    for line in f:
+        line = line.strip()
+        if not line or line.startswith('#') or '=' not in line: continue
+        key, _, value = line.partition('=')
+        os.environ[key.strip()] = value.strip().strip('\"').strip(chr(39))
+print('USER:', repr(os.environ.get('NPI_DB_USER')))
+print('PASSWORD:', repr(os.environ.get('NPI_DB_PASSWORD')))
+print('LARGO PASSWORD:', len(os.environ.get('NPI_DB_PASSWORD', '')))
+"
