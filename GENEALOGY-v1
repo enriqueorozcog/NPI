@@ -1,0 +1,343 @@
+import customtkinter as ctk
+import oracledb
+import requests
+from tkinter import messagebox
+
+# Configuración estética global de CustomTkinter
+ctk.set_appearance_mode("Dark")  # Modo oscuro como tu diseño de Figma
+ctk.set_default_color_theme("blue")
+
+class GenealogiaApp(ctk.CTk):
+    def __init__(self):
+        super().__init__()
+        
+        # Configuración de la ventana principal
+        self.title("Kore Genealogy")
+        self.geometry("1000x600")
+        
+        # Configuración del grid principal (2 columnas: barra lateral e interfaz principal)
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        
+        # Guardar el token en memoria para no consultar la BD en cada clic
+        self.token_actual = None
+        
+        self.crear_barra_lateral()
+        self.crear_pantalla_principal()
+        
+    def crear_barra_lateral(self):
+        """Crea el panel de navegación izquierdo de Figma"""
+        self.sidebar_frame = ctk.CTkFrame(self, width=200, corner_radius=0, fg_color="#1E1E24")
+        self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
+        self.sidebar_frame.grid_rowconfigure(4, weight=1)
+        
+        # Título de la App
+        self.logo_label = ctk.CTkLabel(self.sidebar_frame, text="PMX", font=ctk.CTkFont(size=16, weight="bold", family="Segoe UI"))
+        self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 10))
+        self.sub_logo_label = ctk.CTkLabel(self.sidebar_frame, text="Genealogy", font=ctk.CTkFont(size=12), text_color="gray")
+        self.sub_logo_label.grid(row=1, column=0, padx=20, pady=(0, 20))
+        
+        # Botones de navegación
+        self.btn_buscar = ctk.CTkButton(self.sidebar_frame, text="🔍 Buscar SN", anchor="w", fg_color="#2A2B36")
+        self.btn_buscar.grid(row=2, column=0, padx=10, pady=5, sticky="ew")
+        
+        self.btn_config = ctk.CTkButton(self.sidebar_frame, text="⚙️ Configuración", anchor="w", fg_color="transparent")
+        self.btn_config.grid(row=3, column=0, padx=10, pady=5, sticky="ew")
+
+    def crear_pantalla_principal(self):
+        """Crea el espacio derecho para la captura y visualización de datos"""
+        self.main_frame = ctk.CTkFrame(self, fg_color="#121214", corner_radius=0)
+        self.main_frame.grid(row=0, column=1, sticky="nsew", padx=0, pady=0)
+        self.main_frame.grid_columnconfigure(0, weight=1)
+        self.main_frame.grid_rowconfigure(0, weight=0)
+        self.main_frame.grid_rowconfigure(1, weight=1)
+        
+        # --- ZONA DE BÚSQUEDA ---
+        self.search_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        self.search_frame.grid(row=0, column=0, padx=40, pady=(40, 20), sticky="ew")
+        self.search_frame.grid_columnconfigure(0, weight=1)
+        
+        # Campo para ingresar el SN
+        self.entry_sn = ctk.CTkEntry(self.search_frame, placeholder_text="Ingrese el Número de Serie (SN) ejemplo: BK37RR625333Q6", height=45, font=ctk.CTkFont(size=14))
+        self.entry_sn.grid(row=0, column=0, padx=(0, 10), sticky="ew")
+        
+        # Botón para ejecutar la acción
+        self.btn_consultar = ctk.CTkButton(self.search_frame, text="Consultar", width=120, height=45, font=ctk.CTkFont(size=14, weight="bold"), command=self.ejecutar_consulta)
+        self.btn_consultar.grid(row=0, column=1, sticky="e")
+        
+        # --- ZONA DE RESULTADOS (TARJETAS ESTILO FIGMA) ---
+        self.results_frame = ctk.CTkScrollableFrame(self.main_frame, fg_color="transparent", label_text="")
+        self.results_frame.grid(row=1, column=0, padx=0, pady=10, sticky="nsew")
+        self.results_frame.grid_columnconfigure((0, 1), weight=1)
+        self.results_frame.grid_rowconfigure((0, 1, 2), weight=1)
+        
+        # Tarjeta 1: Información General
+        self.card_info = ctk.CTkFrame(self.results_frame, fg_color="#1E1E24", corner_radius=12)
+        self.card_info.grid(row=0, column=0, padx=(40, 10), pady=(10, 5), sticky="nsew")
+        
+        self.lbl_title_info = ctk.CTkLabel(self.card_info, text="DETALLES DEL DISPOSITIVO", font=ctk.CTkFont(size=12, weight="bold"), text_color="#3B82F6")
+        self.lbl_title_info.pack(anchor="w", pady=(15, 10), padx=15)
+        
+        self.lbl_sn = ctk.CTkLabel(self.card_info, text="Serial Number: --", font=ctk.CTkFont(size=13), justify="left")
+        self.lbl_sn.pack(anchor="w", pady=3, padx=15)
+        self.lbl_proyecto = ctk.CTkLabel(self.card_info, text="Proyecto: --", font=ctk.CTkFont(size=13), justify="left")
+        self.lbl_proyecto.pack(anchor="w", pady=3, padx=15)
+        self.lbl_producto = ctk.CTkLabel(self.card_info, text="Producto: --", font=ctk.CTkFont(size=13), justify="left")
+        self.lbl_producto.pack(anchor="w", pady=3, padx=15)
+        self.lbl_modelo = ctk.CTkLabel(self.card_info, text="Modelo: --", font=ctk.CTkFont(size=13), justify="left")
+        self.lbl_modelo.pack(anchor="w", pady=3, padx=15)
+        self.lbl_lifecycle = ctk.CTkLabel(self.card_info, text="Lifecycle: --", font=ctk.CTkFont(size=13), justify="left")
+        self.lbl_lifecycle.pack(anchor="w", pady=(3, 15), padx=15)
+        
+        # Tarjeta 2: Especificaciones Técnicas
+        self.card_specs = ctk.CTkFrame(self.results_frame, fg_color="#1E1E24", corner_radius=12)
+        self.card_specs.grid(row=0, column=1, padx=(10, 40), pady=(10, 5), sticky="nsew")
+        
+        self.lbl_title_specs = ctk.CTkLabel(self.card_specs, text="ESPECIFICACIONES TÉCNICAS", font=ctk.CTkFont(size=12, weight="bold"), text_color="#8B5CF6")
+        self.lbl_title_specs.pack(anchor="w", pady=(15, 10), padx=15)
+        
+        self.lbl_ram = ctk.CTkLabel(self.card_specs, text="RAM: --", font=ctk.CTkFont(size=13), justify="left")
+        self.lbl_ram.pack(anchor="w", pady=3, padx=15)
+        self.lbl_storage = ctk.CTkLabel(self.card_specs, text="Almacenamiento: --", font=ctk.CTkFont(size=13), justify="left")
+        self.lbl_storage.pack(anchor="w", pady=3, padx=15)
+        self.lbl_cpu = ctk.CTkLabel(self.card_specs, text="CPU: --", font=ctk.CTkFont(size=13), justify="left")
+        self.lbl_cpu.pack(anchor="w", pady=3, padx=15)
+        self.lbl_os = ctk.CTkLabel(self.card_specs, text="OS: --", font=ctk.CTkFont(size=13), justify="left")
+        self.lbl_os.pack(anchor="w", pady=3, padx=15)
+        self.lbl_country = ctk.CTkLabel(self.card_specs, text="País de Origen: --", font=ctk.CTkFont(size=13), justify="left")
+        self.lbl_country.pack(anchor="w", pady=(3, 15), padx=15)
+        
+        # Tarjeta 3: Estado y Seguimiento
+        self.card_status = ctk.CTkFrame(self.results_frame, fg_color="#1E1E24", corner_radius=12)
+        self.card_status.grid(row=1, column=0, padx=(40, 10), pady=(5, 10), sticky="nsew")
+        
+        self.lbl_title_status = ctk.CTkLabel(self.card_status, text="ESTADO Y SEGUIMIENTO", font=ctk.CTkFont(size=12, weight="bold"), text_color="#10B981")
+        self.lbl_title_status.pack(anchor="w", pady=(15, 10), padx=15)
+        
+        self.lbl_proceso = ctk.CTkLabel(self.card_status, text="Proceso Actual: --", font=ctk.CTkFont(size=13), justify="left")
+        self.lbl_proceso.pack(anchor="w", pady=3, padx=15)
+        self.lbl_fecha = ctk.CTkLabel(self.card_status, text="Fecha del Evento: --", font=ctk.CTkFont(size=13), justify="left")
+        self.lbl_fecha.pack(anchor="w", pady=3, padx=15)
+        self.lbl_firmware = ctk.CTkLabel(self.card_status, text="Firmware: --", font=ctk.CTkFont(size=13), justify="left")
+        self.lbl_firmware.pack(anchor="w", pady=3, padx=15)
+        self.lbl_badge = ctk.CTkLabel(self.card_status, text="STATUS", font=ctk.CTkFont(size=11, weight="bold"), fg_color="#2A2B36", corner_radius=6, height=24)
+        self.lbl_badge.pack(anchor="w", pady=(10, 15), padx=15)
+        
+        # Tarjeta 4: Componentes Principales
+        self.card_components = ctk.CTkFrame(self.results_frame, fg_color="#1E1E24", corner_radius=12)
+        self.card_components.grid(row=1, column=1, padx=(10, 40), pady=(5, 10), sticky="nsew")
+        
+        self.lbl_title_components = ctk.CTkLabel(self.card_components, text="COMPONENTES PRINCIPALES", font=ctk.CTkFont(size=12, weight="bold"), text_color="#F59E0B")
+        self.lbl_title_components.pack(anchor="w", pady=(15, 10), padx=15)
+        
+        self.lbl_motherboard = ctk.CTkLabel(self.card_components, text="Motherboard: --", font=ctk.CTkFont(size=13), justify="left")
+        self.lbl_motherboard.pack(anchor="w", pady=3, padx=15)
+        self.lbl_battery = ctk.CTkLabel(self.card_components, text="Batería: --", font=ctk.CTkFont(size=13), justify="left")
+        self.lbl_battery.pack(anchor="w", pady=3, padx=15)
+        self.lbl_display = ctk.CTkLabel(self.card_components, text="Display: --", font=ctk.CTkFont(size=13), justify="left")
+        self.lbl_display.pack(anchor="w", pady=3, padx=15)
+        self.lbl_storage_model = ctk.CTkLabel(self.card_components, text="Storage: --", font=ctk.CTkFont(size=13), justify="left")
+        self.lbl_storage_model.pack(anchor="w", pady=(3, 15), padx=15)
+        
+        # Tarjeta 5: Atributos del Dispositivo (con scroll)
+        self.card_attributes = ctk.CTkFrame(self.results_frame, fg_color="#1E1E24", corner_radius=12)
+        self.card_attributes.grid(row=2, column=0, columnspan=2, padx=40, pady=(5, 20), sticky="nsew")
+        self.card_attributes.configure(width=700, height=350)
+        
+        self.lbl_title_attributes = ctk.CTkLabel(self.card_attributes, text="GENEALOGY ITEMS", font=ctk.CTkFont(size=12, weight="bold"), text_color="#EC4899")
+        self.lbl_title_attributes.pack(anchor="w", pady=(15, 10), padx=15)
+        
+        # Frame desplazable para atributos
+        self.attributes_scroll = ctk.CTkScrollableFrame(self.card_attributes, fg_color="transparent", label_text="")
+        self.attributes_scroll.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+        self.attributes_scroll.grid_columnconfigure((0, 1, 2, 3), weight=1)
+        
+        # Inicializar labels para atributos (se actualizarán dinámicamente)
+        self.attribute_labels = {}
+
+    # =====================================================================
+    # LÓGICA DE CONEXIÓN A BASE DE DATOS Y API
+    # =====================================================================
+    def obtener_token_oracle(self):
+        """Extrae el token activo desde tu base de datos Oracle (Modo Thin)"""
+        usuario = "PMXERS_RPT"
+        contrasena = "rptPMX$2310"
+        dsn_string = "(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=10.235.5.11)(PORT=1521))(CONNECT_DATA=(SERVICE_NAME=pmxesdb1)))"
+        
+        query = "SELECT TOKEN FROM ers_edi_kore_token WHERE active_flag = 'Y'"
+        
+        try:
+            connection = oracledb.connect(user=usuario, password=contrasena, dsn=dsn_string)
+            with connection.cursor() as cursor:
+                cursor.execute(query)
+                row = cursor.fetchone()
+                if row:
+                    return row[0] # Extrae el string del Token JWT
+            return None
+        except Exception as e:
+            print(f"Error base de datos: {e}")
+            return None
+
+    def ejecutar_consulta(self):
+        """Se activa al dar clic en 'Consultar'"""
+        sn_ingresado = self.entry_sn.get().strip()
+        
+        if not sn_ingresado:
+            messagebox.showwarning("Campo vacío", "Por favor introduce un Número de Serie válido.")
+            return
+            
+        # 1. Validar u obtener token de Oracle
+        if not self.token_actual:
+            self.btn_consultar.configure(text="Conectando BD...")
+            self.update()
+            self.token_actual = self.obtener_token_oracle()
+            
+        if not self.token_actual:
+            self.btn_consultar.configure(text="Consultar")
+            messagebox.showerror("Error de Autenticación", "No se pudo extraer el token activo desde Oracle.\nVerifica tus datos de red.")
+            return
+            
+        # 2. Consultar API de Microsoft
+        self.btn_consultar.configure(text="Buscando API...")
+        self.update()
+        
+        url = f"https://api.supplychain.microsoft.com/Manufacturing/GenealogyService/V2/Devices/{sn_ingresado}"
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "SiteIdentifier": "0001004439",
+            "Authorization": f"Bearer {self.token_actual}"
+        }
+        
+        try:
+            response = requests.get(url, headers=headers)
+            self.btn_consultar.configure(text="Consultar")
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Extraer información básica
+                sn = data.get('DeviceSerialNumber', 'N/A')
+                project = data.get('Project', 'N/A')
+                product = data.get('Product', 'N/A')
+                process = data.get('ProcessName', 'N/A')
+                lifecycle = data.get('ProductLifecycle', 'N/A')
+                event_time = data.get('DeviceEventTime', 'N/A')
+                
+                # Extraer atributos del assembly FINALASSEMBLY
+                attributes = {}
+                assemblies = data.get('AssemblyCollection', [])
+                for assembly in assemblies:
+                    if assembly.get('AssemblyKey') == 'FINALASSEMBLY':
+                        attrs = assembly.get('Attributes', [])
+                        for attr in attrs:
+                            attributes[attr.get('AttributeName')] = attr.get('AttributeValue')
+                
+                # Extraer información de componentes
+                motherboard_sn = ''
+                battery_sn = ''
+                display_sn = ''
+                storage_model = ''
+                
+                for assembly in assemblies:
+                    components = assembly.get('Components', [])
+                    for comp in components:
+                        location = comp.get('ComponentLocation', '')
+                        if location == 'MOTHERBOARD':
+                            motherboard_sn = comp.get('ComponentSerialNumber', 'N/A')
+                        elif location == 'BATTERY':
+                            battery_sn = comp.get('ComponentSerialNumber', 'N/A')
+                        elif location == 'DISPLAYPANEL':
+                            display_sn = comp.get('ComponentSerialNumber', 'N/A')
+                        elif location == 'BUCKET':
+                            storage_model = comp.get('ComponentVendorName', 'N/A')
+                
+                # Actualizar Tarjeta 1: Detalles del Dispositivo
+                self.lbl_sn.configure(text=f"Serial Number: {sn}")
+                self.lbl_proyecto.configure(text=f"Proyecto: {project}")
+                self.lbl_producto.configure(text=f"Producto: {product}")
+                self.lbl_modelo.configure(text=f"Modelo: {attributes.get('MODEL', 'N/A')}")
+                self.lbl_lifecycle.configure(text=f"Lifecycle: {lifecycle}")
+                
+                # Actualizar Tarjeta 2: Especificaciones Técnicas
+                self.lbl_ram.configure(text=f"RAM: {attributes.get('RAMSIZE', 'N/A')}")
+                self.lbl_storage.configure(text=f"Almacenamiento: {attributes.get('STORAGESPACE', 'N/A')}")
+                self.lbl_cpu.configure(text=f"CPU: {attributes.get('CPUTYPE', 'N/A')}")
+                os_version = attributes.get('OSVERSHORT', 'N/A')
+                self.lbl_os.configure(text=f"OS: Windows 11 ({os_version})")
+                self.lbl_country.configure(text=f"País de Origen: {attributes.get('COUNTRYOFORIGIN', 'N/A')}")
+                
+                # Actualizar Tarjeta 3: Estado y Seguimiento
+                self.lbl_proceso.configure(text=f"Proceso Actual: {process}")
+                event_date = event_time.split('T')[0] if 'T' in event_time else event_time
+                self.lbl_fecha.configure(text=f"Fecha del Evento: {event_date}")
+                self.lbl_firmware.configure(text=f"Firmware: {attributes.get('FIRMWAREVERSION', 'N/A')}")
+                
+                # Actualizar Badge según proceso
+                proceso = process.upper()
+                if "REFURBISHMENT" in proceso:
+                    self.lbl_badge.configure(text=" REACONDICIONAMIENTO ", fg_color="#3B82F6", text_color="white")
+                else:
+                    self.lbl_badge.configure(text=f" {proceso} ", fg_color="#10B981", text_color="white")
+                
+                # Actualizar Tarjeta 4: Componentes Principales
+                self.lbl_motherboard.configure(text=f"Motherboard: {motherboard_sn}")
+                self.lbl_battery.configure(text=f"Batería: {battery_sn}")
+                self.lbl_display.configure(text=f"Display: {display_sn}")
+                self.lbl_storage_model.configure(text=f"Storage: {storage_model}")
+                
+                # Actualizar Tarjeta 5: Atributos del Dispositivo
+                # Limpiar atributos anteriores
+                for widget in self.attributes_scroll.winfo_children():
+                    widget.destroy()
+                self.attribute_labels.clear()
+                
+                # Atributos a mostrar
+                atributos_mostrar = {
+                    'WIFIMACADDRESS': 'WiFi MAC Address',
+                    'BLUETOOTHMACADDRESS': 'Bluetooth MAC Address',
+                    'UUID': 'UUID',
+                    'OA3KEY': 'OA3 Key',
+                    'YEAROFMFG': 'Año Manufactura',
+                    'ISDOA': 'Es DOA',
+                    'ISRNR': 'RNR Status',
+                    'ISFRU': 'Es FRU',
+                    'STORAGEMODEL': 'Storage Model',
+                    'STORAGEFWVERSION': 'Storage FW Version',
+                    'IMPROVRELEASEVERSION': 'IMPROV Release',
+                    'DUTTYPE': 'DUT Type',
+                    'DEVICECOLOR': 'Color del Dispositivo',
+                    'REGIONALIZEDDEVICEPARTNUMBER': 'Part Number Reg.',
+                    'SOFTWAREASSEMBLYPARTNUMBER': 'Software Part Number',
+                    'PASSTHROUGHLANADDRESS': 'LAN Address',
+                    'COMPUTEMBSN': 'Compute MB SN',
+                    'SYSTEMDUTSN': 'System DUT SN'
+                }
+                
+                # Crear labels para cada atributo
+                row = 0
+                col = 0
+                for attr_key, attr_label in atributos_mostrar.items():
+                    attr_value = attributes.get(attr_key, 'N/A')
+                    lbl = ctk.CTkLabel(self.attributes_scroll, text=f"{attr_label}: {attr_value}", font=ctk.CTkFont(size=11), justify="left")
+                    lbl.grid(row=row, column=col, sticky="ew", padx=10, pady=3)
+                    
+                    col += 1
+                    if col >= 4:
+                        col = 0
+                        row += 1
+                    
+            elif response.status_code == 401:
+                # Si el token expiró mientras la app estaba abierta, lo borramos para pedir uno nuevo el próximo clic
+                self.token_actual = None
+                messagebox.showerror("Token Expirado", "El token ha caducado. Intenta dar clic en Consultar nuevamente para refrescarlo.")
+            else:
+                messagebox.showerror("Error API", f"Dispositivo no encontrado o error de parámetros.\nCódigo HTTP: {response.status_code}")
+                
+        except Exception as e:
+            self.btn_consultar.configure(text="Consultar")
+            messagebox.showerror("Error de Red", f"No se pudo establecer comunicación con el servidor de Microsoft:\n{e}")
+
+if __name__ == "__main__":
+    app = GenealogiaApp()
+    app.mainloop()
