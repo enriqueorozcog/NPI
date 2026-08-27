@@ -1,0 +1,684 @@
+import customtkinter as ctk
+import oracledb
+import requests
+import threading
+import os
+import keyring
+import ctypes
+from tkinter import messagebox, simpledialog
+
+
+def configurar_escalado_windows():
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except (AttributeError, OSError):
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except (AttributeError, OSError):
+            pass
+
+
+configurar_escalado_windows()
+
+# Configuración CustomTkinter
+ctk.set_appearance_mode("Dark")  # Modo oscuro
+ctk.set_default_color_theme("blue")
+
+class GenealogiaApp(ctk.CTk):
+    CREDENTIAL_SERVICE = "KoreGenealogy-Oracle"
+
+    def __init__(self):
+        super().__init__()
+        
+        # Configuración de la ventana principal
+        self.title("Kore Genealogy")
+        self.geometry("1000x600")
+        
+        # Configuración del grid principal
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        
+        # Guarda token en memoria para no consultar la BD en cada clic
+        self.token_actual = None
+        self.error_oracle = None
+        
+        self.crear_barra_lateral()
+        self.crear_pantalla_principal()
+
+    def crear_campo(self, parent, key, value, pady=(3, 3)):
+        field_frame = ctk.CTkFrame(parent, fg_color="transparent")
+        field_frame.pack(fill="x", pady=pady, padx=15)
+
+        key_label = ctk.CTkLabel(field_frame, text=key, font=ctk.CTkFont(size=13), justify="left")
+        key_label.pack(side="left", anchor="w", padx=(0, 4))
+
+        value_label = ctk.CTkLabel(field_frame, text=value, font=ctk.CTkFont(size=13, weight="bold"), justify="left")
+        value_label.pack(side="left", anchor="w")
+
+        return key_label, value_label
+        
+    def crear_barra_lateral(self):
+        """Crea panel de navegación izquierdo"""
+        self.sidebar_frame = ctk.CTkFrame(self, width=200, corner_radius=0, fg_color="#1E1E24")
+        self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
+        self.sidebar_frame.grid_rowconfigure(4, weight=1)
+        
+        # Título de la App
+        self.logo_label = ctk.CTkLabel(self.sidebar_frame, text="PMX", font=ctk.CTkFont(size=16, weight="bold", family="Segoe UI"))
+        self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 10))
+        self.sub_logo_label = ctk.CTkLabel(self.sidebar_frame, text="Genealogy", font=ctk.CTkFont(size=12), text_color="gray")
+        self.sub_logo_label.grid(row=1, column=0, padx=20, pady=(0, 20))
+        
+        # Botones de navegación
+        self.btn_buscar = ctk.CTkButton(self.sidebar_frame, text="🔍 Buscar SN", anchor="w", fg_color="#2A2B36")
+        self.btn_buscar.grid(row=2, column=0, padx=10, pady=5, sticky="ew")
+        
+        self.btn_config = ctk.CTkButton(self.sidebar_frame, text="⚙️ Configuración", anchor="w", fg_color="transparent")
+        self.btn_config.grid(row=3, column=0, padx=10, pady=5, sticky="ew")
+
+    def crear_pantalla_principal(self):
+        """Crea el espacio derecho para la captura y visualización de datos"""
+        self.main_frame = ctk.CTkFrame(self, fg_color="#121214", corner_radius=0)
+        self.main_frame.grid(row=0, column=1, sticky="nsew", padx=0, pady=0)
+        self.main_frame.grid_columnconfigure(0, weight=1)
+        self.main_frame.grid_rowconfigure(0, weight=0)
+        self.main_frame.grid_rowconfigure(1, weight=1)
+        
+        # --- ZONA DE BÚSQUEDA ---
+        self.search_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        self.search_frame.grid(row=0, column=0, padx=40, pady=(40, 20), sticky="ew")
+        self.search_frame.grid_columnconfigure(0, weight=1)
+        
+        # Campo para ingresar el SN
+        self.entry_sn = ctk.CTkEntry(self.search_frame, placeholder_text="Ingrese el Número de Serie (SN) ejemplo: BK37RR625333Q6", height=45, font=ctk.CTkFont(size=14))
+        self.entry_sn.grid(row=0, column=0, padx=(0, 10), sticky="ew")
+        
+        # Botón para ejecutar la acción
+        self.btn_consultar = ctk.CTkButton(self.search_frame, text="Consultar", width=120, height=45, font=ctk.CTkFont(size=14, weight="bold"), command=self.ejecutar_consulta)
+        self.btn_consultar.grid(row=0, column=1, sticky="e")
+
+        self.progress_bar = ctk.CTkProgressBar(self.search_frame, mode="indeterminate", height=4)
+        self.progress_bar.grid(row=1, column=0, columnspan=2, padx=2, pady=(6, 0), sticky="ew")
+        self.progress_bar.set(0)
+        
+        # --- DASHBOARD POR PESTAÑAS ---
+        self.dashboard_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        self.dashboard_frame.grid(row=1, column=0, padx=32, pady=(0, 18), sticky="nsew")
+        self.dashboard_frame.grid_rowconfigure(1, weight=1)
+        self.dashboard_frame.grid_columnconfigure(0, weight=1)
+
+        self.summary_frame = ctk.CTkFrame(self.dashboard_frame, fg_color="transparent")
+        self.summary_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        self.summary_frame.grid_columnconfigure(tuple(range(6)), weight=1)
+        self.summary_fields = {}
+        summary_data = [
+            ("SERIAL NUMBER", "--"), ("PROCESS", "--"), ("PRODUCT / PROJECT", "--"),
+            ("LIFECYCLE", "--"), ("SITE", "--"), ("EVENT TIME", "--")
+        ]
+        for column, (key, value) in enumerate(summary_data):
+            summary_card = ctk.CTkFrame(self.summary_frame, fg_color="#1E1E24", corner_radius=7)
+            summary_card.grid(row=0, column=column, padx=3, sticky="nsew")
+            ctk.CTkLabel(summary_card, text=key, font=ctk.CTkFont(size=10), text_color="#9B9BA6").pack(anchor="w", padx=10, pady=(8, 2))
+            value_label = ctk.CTkLabel(summary_card, text=value, font=ctk.CTkFont(size=12, weight="bold"), anchor="w")
+            if key == "PROCESS":
+                value_label.pack(anchor="w", padx=10, pady=(0, 8))
+            else:
+                value_label.pack(fill="x", padx=10, pady=(0, 8))
+            self.summary_fields[key] = value_label
+
+        self.dashboard_tabs = ctk.CTkTabview(self.dashboard_frame, corner_radius=8, border_width=1, border_color="#303039")
+        self.dashboard_tabs.grid(row=1, column=0, sticky="nsew")
+        for tab_name in ("Assemblies", "All Components", "Attributes", "ESNs / MACs"):
+            self.dashboard_tabs.add(tab_name)
+
+        self.assemblies_view = ctk.CTkScrollableFrame(self.dashboard_tabs.tab("Assemblies"), fg_color="transparent")
+        self.assemblies_view.pack(fill="both", expand=True, padx=8, pady=8)
+        self.components_search = ctk.CTkEntry(
+            self.dashboard_tabs.tab("All Components"),
+            placeholder_text="Search location, part, serial, vendor...",
+            height=30
+        )
+        self.components_search.pack(fill="x", padx=8, pady=(8, 0))
+        self.components_search.bind("<KeyRelease>", self.filtrar_componentes)
+        self.components_count_label = ctk.CTkLabel(
+            self.dashboard_tabs.tab("All Components"),
+            text="0 components",
+            anchor="w",
+            text_color="#A7A7B3"
+        )
+        self.components_count_label.pack(fill="x", padx=8, pady=(0, 4))
+        self.components_view = ctk.CTkScrollableFrame(self.dashboard_tabs.tab("All Components"), fg_color="transparent")
+        self.components_view.pack(fill="both", expand=True, padx=8, pady=8)
+        self.attributes_search = ctk.CTkEntry(
+            self.dashboard_tabs.tab("Attributes"),
+            placeholder_text="Search attribute name or value...",
+            placeholder_text_color="#9B9BA6",
+            height=30
+        )
+        self.attributes_search.pack(fill="x", padx=8, pady=(8, 0))
+        self.attributes_search.bind("<KeyRelease>", self.filtrar_atributos)
+        self.after_idle(self.attributes_search._activate_placeholder)
+        self.attributes_count_label = ctk.CTkLabel(
+            self.dashboard_tabs.tab("Attributes"),
+            text="0 attributes",
+            anchor="w",
+            text_color="#A7A7B3"
+        )
+        self.attributes_count_label.pack(fill="x", padx=8, pady=(0, 4))
+        self.attributes_view = ctk.CTkScrollableFrame(self.dashboard_tabs.tab("Attributes"), fg_color="transparent")
+        self.attributes_view.pack(fill="both", expand=True, padx=8, pady=8)
+        self.esns_view = ctk.CTkScrollableFrame(self.dashboard_tabs.tab("ESNs / MACs"), fg_color="transparent")
+        self.esns_view.pack(fill="both", expand=True, padx=8, pady=8)
+        
+        """
+        # Legacy card layout removed; tabs below own the result views.
+        self.card_info = ctk.CTkFrame(self.dashboard_frame, fg_color="transparent")
+        self.card_info.grid(row=0, column=0, padx=(40, 10), pady=(10, 5), sticky="nsew")
+        
+        self.lbl_title_info = ctk.CTkLabel(self.card_info, text="DETALLES DEL DISPOSITIVO", font=ctk.CTkFont(size=12, weight="bold"), text_color="#3B82F6")
+        self.lbl_title_info.pack(anchor="w", pady=(15, 10), padx=15)
+        
+        self.lbl_sn, self.lbl_sn_value = self.crear_campo(self.card_info, "Serial Number:", "--")
+        self.lbl_proyecto, self.lbl_proyecto_value = self.crear_campo(self.card_info, "Proyecto:", "--")
+        self.lbl_producto, self.lbl_producto_value = self.crear_campo(self.card_info, "Producto:", "--")
+        self.lbl_modelo, self.lbl_modelo_value = self.crear_campo(self.card_info, "Modelo:", "--")
+        self.lbl_lifecycle, self.lbl_lifecycle_value = self.crear_campo(self.card_info, "Lifecycle:", "--", pady=(3, 15))
+        
+        # Tarjeta 2: Especificaciones Técnicas
+        self.card_specs = ctk.CTkFrame(self.results_frame, fg_color="#1E1E24", corner_radius=12)
+        self.card_specs.grid(row=0, column=1, padx=(10, 40), pady=(10, 5), sticky="nsew")
+        
+        self.lbl_title_specs = ctk.CTkLabel(self.card_specs, text="ESPECIFICACIONES TÉCNICAS", font=ctk.CTkFont(size=12, weight="bold"), text_color="#8B5CF6")
+        self.lbl_title_specs.pack(anchor="w", pady=(15, 10), padx=15)
+        
+        self.lbl_ram, self.lbl_ram_value = self.crear_campo(self.card_specs, "RAM:", "--")
+        self.lbl_storage, self.lbl_storage_value = self.crear_campo(self.card_specs, "Almacenamiento:", "--")
+        self.lbl_cpu, self.lbl_cpu_value = self.crear_campo(self.card_specs, "CPU:", "--")
+        self.lbl_os, self.lbl_os_value = self.crear_campo(self.card_specs, "OS:", "--")
+        self.lbl_country, self.lbl_country_value = self.crear_campo(self.card_specs, "País de Origen:", "--", pady=(3, 15))
+        
+        # Tarjeta 3: Estado y Seguimiento
+        self.card_status = ctk.CTkFrame(self.results_frame, fg_color="#1E1E24", corner_radius=12)
+        self.card_status.grid(row=1, column=0, padx=(40, 10), pady=(5, 10), sticky="nsew")
+        
+        self.lbl_title_status = ctk.CTkLabel(self.card_status, text="ESTADO Y SEGUIMIENTO", font=ctk.CTkFont(size=12, weight="bold"), text_color="#10B981")
+        self.lbl_title_status.pack(anchor="w", pady=(15, 10), padx=15)
+        
+        self.lbl_proceso, self.lbl_proceso_value = self.crear_campo(self.card_status, "Proceso Actual:", "--")
+        self.lbl_fecha, self.lbl_fecha_value = self.crear_campo(self.card_status, "Fecha del Evento:", "--")
+        self.lbl_firmware, self.lbl_firmware_value = self.crear_campo(self.card_status, "Firmware:", "--")
+        self.lbl_badge = ctk.CTkLabel(self.card_status, text="STATUS", font=ctk.CTkFont(size=11, weight="bold"), fg_color="#2A2B36", corner_radius=6, height=24)
+        self.lbl_badge.pack(anchor="w", pady=(10, 15), padx=15)
+        
+        # Tarjeta 4: Componentes Principales
+        self.card_components = ctk.CTkFrame(self.results_frame, fg_color="#1E1E24", corner_radius=12)
+        self.card_components.grid(row=1, column=1, padx=(10, 40), pady=(5, 10), sticky="nsew")
+        
+        self.lbl_title_components = ctk.CTkLabel(self.card_components, text="COMPONENTES PRINCIPALES", font=ctk.CTkFont(size=12, weight="bold"), text_color="#F59E0B")
+        self.lbl_title_components.pack(anchor="w", pady=(15, 10), padx=15)
+        
+        self.lbl_motherboard, self.lbl_motherboard_value = self.crear_campo(self.card_components, "Motherboard:", "--")
+        self.lbl_battery, self.lbl_battery_value = self.crear_campo(self.card_components, "Batería:", "--")
+        self.lbl_display, self.lbl_display_value = self.crear_campo(self.card_components, "Display:", "--")
+        self.lbl_storage_model, self.lbl_storage_model_value = self.crear_campo(self.card_components, "Storage:", "--", pady=(3, 15))
+        
+        # Tarjeta 5: Atributos del Dispositivo (con scroll)
+        self.card_attributes = ctk.CTkFrame(self.results_frame, fg_color="#1E1E24", corner_radius=12)
+        self.card_attributes.grid(row=2, column=0, columnspan=2, padx=40, pady=(5, 20), sticky="nsew")
+        self.card_attributes.configure(width=700, height=350)
+        
+        self.lbl_title_attributes = ctk.CTkLabel(self.card_attributes, text="GENEALOGY ITEMS", font=ctk.CTkFont(size=12, weight="bold"), text_color="#EC4899")
+        self.lbl_title_attributes.pack(anchor="w", pady=(15, 10), padx=15)
+
+        self.lbl_assembly_key, self.lbl_assembly_key_value = self.crear_campo(self.card_attributes, "Assembly:", "--")
+        self.lbl_assembly_part, self.lbl_assembly_part_value = self.crear_campo(self.card_attributes, "Part Number:", "--")
+        self.lbl_assembly_serial, self.lbl_assembly_serial_value = self.crear_campo(self.card_attributes, "Assembly Serial:", "--")
+        
+        # Frame desplazable para atributos
+        self.attributes_scroll = ctk.CTkScrollableFrame(self.card_attributes, fg_color="transparent", label_text="")
+        self.attributes_scroll.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+        self.attributes_scroll.grid_columnconfigure((0, 1), weight=1)
+
+        self.lbl_components_table = ctk.CTkLabel(
+            self.attributes_scroll,
+            text="COMPONENTES",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#F59E0B"
+        )
+        self.lbl_components_table.grid(row=0, column=0, columnspan=2, sticky="w", padx=10, pady=(5, 8))
+        
+        # Inicializar labels para atributos (se actualizan)
+        self.attribute_labels = {}
+
+        """
+
+    def limpiar_vista(self, view):
+        for widget in view.winfo_children():
+            widget.destroy()
+
+    def agregar_encabezado_tabla(self, parent, headers, column_weights=None):
+        for column, header in enumerate(headers):
+            parent.grid_columnconfigure(column, weight=(column_weights or {}).get(column, 1), uniform="table")
+            ctk.CTkLabel(
+                parent,
+                text=header,
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color="#9B9BA6",
+                anchor="w"
+            ).grid(row=0, column=column, sticky="ew", padx=10, pady=(8, 5))
+
+    def agregar_fila_tabla(self, parent, row, values, value_columns=None, text_color=None, hover=False, column_weights=None):
+        value_columns = value_columns or set()
+        row_frame = ctk.CTkFrame(parent, fg_color="transparent", corner_radius=3)
+        row_frame.grid(row=row, column=0, columnspan=len(values), sticky="ew", padx=2, pady=1)
+        for column in range(len(values)):
+            row_frame.grid_columnconfigure(
+                column,
+                weight=(column_weights or {}).get(column, 1),
+                uniform="table-row"
+            )
+        for column, value in enumerate(values):
+            value_label = ctk.CTkLabel(
+                row_frame,
+                text=str(value),
+                font=ctk.CTkFont(size=11, weight="bold" if column in value_columns else "normal"),
+                text_color=text_color,
+                anchor="w",
+                justify="left"
+            )
+            value_label.grid(row=0, column=column, sticky="ew", padx=8, pady=4)
+            if hover:
+                value_label.bind("<Enter>", lambda _event, target=row_frame: target.configure(fg_color="#303039"))
+                value_label.bind("<Leave>", lambda _event, target=row_frame: target.configure(fg_color="transparent"))
+
+        if hover:
+            row_frame.bind("<Enter>", lambda _event, target=row_frame: target.configure(fg_color="#303039"))
+            row_frame.bind("<Leave>", lambda _event, target=row_frame: target.configure(fg_color="transparent"))
+
+    def crear_detalle_assembly(self, parent, assembly):
+        components = assembly.get("Components") or []
+        attributes = assembly.get("Attributes") or []
+        esns = assembly.get("Esns") or []
+
+        ctk.CTkLabel(
+            parent,
+            text=f"Components ({len(components)})",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#A7A7B3",
+            anchor="w"
+        ).pack(fill="x", padx=12, pady=(10, 4))
+        component_table = ctk.CTkFrame(parent, fg_color="transparent")
+        component_table.pack(fill="x", padx=8)
+        self.agregar_encabezado_tabla(
+            component_table,
+            ("Location", "Part #", "Serial", "Vendor", "State"),
+            {0: 2, 1: 2, 2: 3, 3: 2, 4: 1}
+        )
+        for row, component in enumerate(components, start=1):
+            serial = component.get("ComponentSerialNumber") or component.get("ComponentLotTrackingNumber") or "N/A"
+            self.agregar_fila_tabla(component_table, row, (
+                component.get("ComponentLocation") or "N/A",
+                component.get("ComponentPartNumber") or "N/A",
+                serial,
+                component.get("ComponentVendorName") or "N/A",
+                component.get("ComponentReuseState") or "N/A"
+            ), {4}, "#E5E7EB", True, {0: 2, 1: 2, 2: 3, 3: 2, 4: 1})
+
+        ctk.CTkLabel(
+            parent,
+            text=f"Key Attributes ({len(attributes)})",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#A7A7B3",
+            anchor="w"
+        ).pack(fill="x", padx=12, pady=(12, 4))
+        attribute_table = ctk.CTkFrame(parent, fg_color="transparent")
+        attribute_table.pack(fill="x", padx=8)
+        self.agregar_encabezado_tabla(attribute_table, ("Attribute", "Value"), {0: 2, 1: 3})
+        for row, attribute in enumerate(attributes, start=1):
+            self.agregar_fila_tabla(attribute_table, row, (
+                attribute.get("AttributeName") or "N/A",
+                attribute.get("AttributeValue") or "N/A"
+            ), {1}, "#E5E7EB", True, {0: 2, 1: 3})
+
+        ctk.CTkLabel(
+            parent,
+            text=f"ESNs / MACs ({len(esns)})",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#A7A7B3",
+            anchor="w"
+        ).pack(fill="x", padx=12, pady=(12, 4))
+        esn_table = ctk.CTkFrame(parent, fg_color="transparent")
+        esn_table.pack(fill="x", padx=8, pady=(0, 10))
+        self.agregar_encabezado_tabla(esn_table, ("Name", "Value"), {0: 2, 1: 3})
+        for row, esn in enumerate(esns, start=1):
+            self.agregar_fila_tabla(esn_table, row, (
+                esn.get("EsnName") or "N/A",
+                esn.get("EsnValue") or "N/A"
+            ), {1}, "#E5E7EB", True, {0: 2, 1: 3})
+
+    def alternar_assembly(self, detail_frame, arrow_button, expanded):
+        if expanded:
+            detail_frame.pack_forget()
+            arrow_button.configure(text=">")
+        else:
+            detail_frame.pack(fill="x", padx=8, pady=(0, 8))
+            arrow_button.configure(text="v")
+        return not expanded
+
+    def filtrar_componentes(self, _event=None):
+        search = self.components_search.get().strip().lower()
+        filtered = [
+            component for component in self.all_components
+            if not search or search in " ".join(str(value or "") for value in (
+                component.get("ComponentLocation"),
+                component.get("ComponentPartNumber"),
+                component.get("ComponentSerialNumber"),
+                component.get("ComponentLotTrackingNumber"),
+                component.get("ComponentVendorName"),
+                component.get("ComponentReuseState"),
+                component.get("DOA")
+            )).lower()
+        ]
+        self.limpiar_vista(self.components_view)
+        self.agregar_encabezado_tabla(
+            self.components_view,
+            ("Location", "Part #", "Serial / Lot", "Vendor", "State", "DOA"),
+            {0: 2, 1: 2, 2: 3, 3: 2, 4: 1, 5: 1}
+        )
+        for row, component in enumerate(filtered, start=1):
+            serial_or_lot = component.get("ComponentSerialNumber") or component.get("ComponentLotTrackingNumber") or "N/A"
+            self.agregar_fila_tabla(self.components_view, row, (
+                component.get("ComponentLocation") or "N/A",
+                component.get("ComponentPartNumber") or "N/A",
+                serial_or_lot,
+                component.get("ComponentVendorName") or "N/A",
+                component.get("ComponentReuseState") or "N/A",
+                component.get("DOA") or "No"
+            ), {4}, "#E5E7EB", True, {0: 2, 1: 2, 2: 3, 3: 2, 4: 1, 5: 1})
+        self.components_count_label.configure(text=f"{len(filtered)} of {len(self.all_components)} components")
+
+    def filtrar_atributos(self, _event=None):
+        search = self.attributes_search.get().strip().lower()
+        filtered = [
+            (key, value) for key, value in self.all_attributes.items()
+            if not search or search in f"{key} {value}".lower()
+        ]
+        self.limpiar_vista(self.attributes_view)
+        self.agregar_encabezado_tabla(self.attributes_view, ("Attribute", "Value"), {0: 2, 1: 3})
+        for row, (key, value) in enumerate(sorted(filtered), start=1):
+            self.agregar_fila_tabla(
+                self.attributes_view,
+                row,
+                (key, value),
+                {1},
+                "#E5E7EB",
+                True,
+                {0: 2, 1: 3}
+            )
+        self.attributes_count_label.configure(text=f"{len(filtered)} of {len(self.all_attributes)} attributes")
+
+    def mostrar_datos_dashboard(self, data, assemblies, attributes):
+        self.summary_fields["SERIAL NUMBER"].configure(text=data.get("DeviceSerialNumber") or "N/A")
+        process = data.get("ProcessName") or "N/A"
+        process_label = self.summary_fields["PROCESS"]
+        process_name = str(process).strip().upper()
+        if process_name == "REPAIR":
+            process_label.configure(
+                text="REPAIR",
+                fg_color="#FFF0D6",
+                text_color="#D97706",
+                corner_radius=10
+            )
+        elif process_name == "REFURBISHMENT":
+            process_label.configure(
+                text="REFURBISHMENT",
+                fg_color="#DCFCE7",
+                text_color="#15803D",
+                corner_radius=10
+            )
+        else:
+            process_label.configure(
+                text=process,
+                fg_color="transparent",
+                text_color=("#1F2937", "#F3F4F6"),
+                corner_radius=0
+            )
+        product = data.get("Product") or "N/A"
+        project = data.get("Project") or "N/A"
+        self.summary_fields["PRODUCT / PROJECT"].configure(text=f"{product} / {project}")
+        self.summary_fields["LIFECYCLE"].configure(text=data.get("ProductLifecycle") or "N/A")
+        self.summary_fields["SITE"].configure(text=data.get("SiteIdentifier") or "N/A")
+        self.summary_fields["EVENT TIME"].configure(text=data.get("DeviceEventTime") or "N/A")
+
+        self.limpiar_vista(self.assemblies_view)
+        for row, assembly in enumerate(assemblies):
+            card = ctk.CTkFrame(self.assemblies_view, fg_color="#1E1E24", corner_radius=6)
+            card.pack(fill="x", pady=4)
+            header = ctk.CTkFrame(card, fg_color="transparent", cursor="hand2")
+            header.pack(fill="x", padx=4, pady=(4, 0))
+            header.grid_columnconfigure(0, weight=1)
+            title_frame = ctk.CTkFrame(header, fg_color="transparent", cursor="hand2")
+            title_frame.grid(row=0, column=0, sticky="w", padx=8, pady=(4, 0))
+            title_label = ctk.CTkLabel(
+                title_frame,
+                text=assembly.get("AssemblyKey") or "N/A",
+                font=ctk.CTkFont(size=12, weight="bold"),
+                anchor="w",
+                cursor="hand2"
+            )
+            title_label.pack(side="left")
+            part_label = ctk.CTkLabel(
+                title_frame,
+                text=f"  {assembly.get('PartNumber') or 'N/A'}",
+                font=ctk.CTkFont(size=12),
+                text_color="#A7A7B3",
+                anchor="w",
+                cursor="hand2"
+            )
+            part_label.pack(side="left")
+            expanded = False
+            arrow_button = ctk.CTkButton(header, text="v" if expanded else ">", width=28, height=24, fg_color="transparent", hover_color="#303039")
+            arrow_button.grid(row=0, column=1, rowspan=2, padx=4, pady=2)
+            details = f"SN: {assembly.get('AssemblySerialNumber') or 'N/A'}  |  {len(assembly.get('Components') or [])} components  |  {len(assembly.get('Attributes') or [])} attrs  |  {len(assembly.get('Esns') or [])} ESNs"
+            details_label = ctk.CTkLabel(header, text=details, font=ctk.CTkFont(size=11), text_color="#A7A7B3", anchor="w", cursor="hand2")
+            details_label.grid(row=1, column=0, sticky="w", padx=8, pady=(0, 5))
+            detail_frame = ctk.CTkFrame(card, fg_color="#26262D", corner_radius=4)
+            self.crear_detalle_assembly(detail_frame, assembly)
+            if expanded:
+                detail_frame.pack(fill="x", padx=8, pady=(0, 8))
+            expanded_state = {"value": expanded}
+
+            def toggle(detail=detail_frame, arrow=arrow_button, state=expanded_state):
+                state["value"] = self.alternar_assembly(detail, arrow, state["value"])
+            arrow_button.configure(command=toggle)
+            def mostrar_hover(_event, target=card, header_frame=header):
+                target.configure(fg_color="#303039")
+                header_frame.configure(fg_color="#303039")
+
+            def quitar_hover(_event, target=card, header_frame=header):
+                target.configure(fg_color="#1E1E24")
+                header_frame.configure(fg_color="transparent")
+
+            for clickable in (header, title_frame, title_label, part_label, details_label):
+                clickable.bind("<Button-1>", lambda event, action=toggle: action())
+                clickable.bind("<Enter>", mostrar_hover)
+                clickable.bind("<Leave>", quitar_hover)
+
+        all_components = []
+        for assembly in assemblies:
+            all_components.extend(assembly.get("Components") or [])
+        self.all_components = all_components
+        self.filtrar_componentes()
+
+        self.all_attributes = attributes
+        self.attributes_search.delete(0, "end")
+        self.attributes_search._activate_placeholder()
+        self.filtrar_atributos()
+
+        self.limpiar_vista(self.esns_view)
+        esns_and_macs = {}
+        for key, value in attributes.items():
+            if "MAC" in key.upper() or key.upper() in {"DSN", "SOCID", "UUID"}:
+                esns_and_macs[key] = value
+        for assembly in assemblies:
+            for esn in assembly.get("Esns") or []:
+                if esn.get("EsnName"):
+                    esns_and_macs[esn["EsnName"]] = esn.get("EsnValue") or "N/A"
+        self.esns_view.grid_columnconfigure((0, 1), weight=1, uniform="esn-cards")
+        for index, (key, value) in enumerate(sorted(esns_and_macs.items())):
+            row = index // 2
+            column = index % 2
+            card = ctk.CTkFrame(self.esns_view, fg_color="#26262D", corner_radius=6)
+            card.grid(row=row, column=column, sticky="ew", padx=4, pady=4)
+            ctk.CTkLabel(
+                card,
+                text=str(key),
+                font=ctk.CTkFont(size=10),
+                text_color="#A7A7B3",
+                anchor="w"
+            ).pack(fill="x", padx=10, pady=(8, 2))
+            ctk.CTkLabel(
+                card,
+                text=str(value),
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color="#F3F4F6",
+                anchor="w",
+                justify="left"
+            ).pack(fill="x", padx=10, pady=(0, 8))
+
+    # =====================================================================
+    # CONEXIÓN A BASE DE DATOS Y API
+    # =====================================================================
+    def obtener_credenciales_oracle(self):
+        usuario = os.getenv("KORE_ORACLE_USER") or keyring.get_password(self.CREDENTIAL_SERVICE, "username")
+        contrasena = os.getenv("KORE_ORACLE_PASSWORD") or keyring.get_password(self.CREDENTIAL_SERVICE, usuario or "username")
+
+        if not usuario:
+            usuario = simpledialog.askstring("Configuración de Oracle", "Usuario de Oracle:", parent=self)
+        if usuario and not contrasena:
+            contrasena = simpledialog.askstring("Configuración de Oracle", "Contraseña de Oracle:", show="*", parent=self)
+            if contrasena:
+                keyring.set_password(self.CREDENTIAL_SERVICE, "username", usuario)
+                keyring.set_password(self.CREDENTIAL_SERVICE, usuario, contrasena)
+        return usuario, contrasena
+
+    def obtener_token_oracle(self, usuario, contrasena):
+        """Se extrae el token activo desde la base de datos Oracle (Modo Thin)"""
+        host = os.getenv("KORE_ORACLE_HOST", "10.235.5.11")
+        port = os.getenv("KORE_ORACLE_PORT", "1521")
+        service_name = os.getenv("KORE_ORACLE_SERVICE", "pmxesdb1")
+
+        if not usuario or not contrasena:
+            self.error_oracle = "Faltan KORE_ORACLE_USER o KORE_ORACLE_PASSWORD en este proceso."
+            print(self.error_oracle)
+            return None
+
+        dsn_string = oracledb.makedsn(host, port, service_name=service_name)
+        
+        query = "SELECT TOKEN FROM ers_edi_kore_token WHERE active_flag = 'Y'"
+        
+        try:
+            with oracledb.connect(user=usuario, password=contrasena, dsn=dsn_string) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(query)
+                    row = cursor.fetchone()
+                    if row:
+                        return row[0]
+            self.error_oracle = "La consulta no devolvió ningún token activo."
+            return None
+        except Exception as e:
+            self.error_oracle = f"{type(e).__name__}: {e}"
+            print(f"Error base de datos: {self.error_oracle}")
+            return None
+
+    def ejecutar_consulta(self):
+        """Se activa al dar clic en 'Consultar'"""
+        sn_ingresado = self.entry_sn.get().strip()
+        
+        if not sn_ingresado:
+            messagebox.showwarning("Campo vacío", "Por favor introduce un Número de Serie válido.")
+            return
+            
+        usuario = contrasena = None
+        if not self.token_actual:
+            usuario, contrasena = self.obtener_credenciales_oracle()
+            if not usuario or not contrasena:
+                messagebox.showerror("Error de Autenticación", "Faltan las credenciales de Oracle.")
+                return
+
+        self.btn_consultar.configure(state="disabled", text="Consultando...")
+        self.progress_bar.start()
+
+        def _consulta_worker(sn):
+            url = f"https://api.supplychain.microsoft.com/Manufacturing/GenealogyService/V2/Devices/{sn}"
+            headers = {
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "SiteIdentifier": "0001004439",
+                "Authorization": f"Bearer {self.token_actual}"
+            }
+            try:
+                token = self.token_actual
+                if not token:
+                    token = self.obtener_token_oracle(usuario, contrasena)
+                if not token:
+                    self.after(10, lambda: self._consulta_error(
+                        "Error de Autenticación",
+                        "No se pudo extraer el token activo desde Oracle.\n\n"
+                        f"Diagnóstico: {self.error_oracle or 'Causa desconocida'}"
+                    ))
+                    return
+                self.token_actual = token
+                resp = requests.get(url, headers={**headers, "Authorization": f"Bearer {token}"}, timeout=30)
+            except Exception as e:
+                # Network error: re-enable button and show message on main thread
+                def _err():
+                    self._consulta_error("Error de Red", f"No se pudo establecer comunicación con el servidor:\n{e}")
+                self.after(10, _err)
+                return
+
+            def _handle_response():
+                self._finalizar_consulta()
+                if resp.status_code == 200:
+                    try:
+                        data = resp.json()
+                    except Exception:
+                        messagebox.showerror("Error API", "Respuesta inválida JSON desde la API.")
+                        return
+
+                    # Collect attributes and assemblies safely
+                    assemblies = data.get('AssemblyCollection') or []
+                    attributes = {}
+                    for assembly in assemblies:
+                        if assembly.get('AssemblyKey') == 'FINALASSEMBLY':
+                            for attr in assembly.get('Attributes') or []:
+                                k = attr.get('AttributeName')
+                                if k:
+                                    attributes[k] = attr.get('AttributeValue') or 'N/A'
+
+                    self.mostrar_datos_dashboard(data, assemblies, attributes)
+                elif resp.status_code == 401:
+                    self.token_actual = None
+                    messagebox.showerror("Token Expirado", "El token ha caducado. Intenta dar clic en Consultar nuevamente para refrescarlo.")
+                else:
+                    messagebox.showerror("Error API", f"Dispositivo no encontrado o error de parámetros.\nCódigo HTTP: {resp.status_code}")
+
+            # Schedule handling on main thread
+            self.after(10, _handle_response)
+
+        thread = threading.Thread(target=_consulta_worker, args=(sn_ingresado,), daemon=True)
+        thread.start()
+
+    def _finalizar_consulta(self):
+        self.progress_bar.stop()
+        self.progress_bar.set(0)
+        self.btn_consultar.configure(state="normal", text="Consultar")
+
+    def _consulta_error(self, title, message):
+        self._finalizar_consulta()
+        messagebox.showerror(title, message)
+            
+
+if __name__ == "__main__":
+    app = GenealogiaApp()
+    app.mainloop()
