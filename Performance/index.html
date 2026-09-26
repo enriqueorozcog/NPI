@@ -1,0 +1,1864 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Performance</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Nunito+Sans:wght@600;700;800&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <style>
+    :root {
+      --sky: #1f447f;
+      --sky-deep: #18386d;
+      --nav: rgba(83, 143, 211, 0.38);
+      --nav-active: rgba(111, 173, 235, 0.54);
+      --table-head: rgba(15, 48, 105, 0.58);
+      --row-one: rgba(73, 130, 196, 0.34);
+      --row-two: rgba(97, 151, 209, 0.29);
+      --line: rgba(174, 209, 255, 0.21);
+      --ink: #f7faff;
+      --hills: #285b8f;
+      --hills-dark: #173f70;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      min-width: 320px;
+      min-height: 100vh;
+      margin: 0;
+      overflow-x: hidden;
+      color: var(--ink);
+      font-family: "Nunito Sans", sans-serif;
+      background: var(--sky);
+    }
+
+    .app {
+      position: relative;
+      min-height: 100vh;
+      overflow: hidden;
+      background: linear-gradient(180deg, var(--sky-deep) 0%, var(--sky) 71%, #4775a8 100%);
+    }
+
+    .cloud {
+      position: absolute;
+      width: 210px;
+      height: 35px;
+      border-radius: 50px;
+      opacity: 0.95;
+      background: #f9fbff;
+      filter: drop-shadow(0 5px 5px rgba(14, 36, 70, 0.16));
+    }
+
+    .cloud::before, .cloud::after {
+      position: absolute;
+      bottom: 0;
+      border-radius: 50%;
+      background: inherit;
+      content: "";
+    }
+
+    .cloud::before { width: 79px; height: 79px; left: 36px; }
+    .cloud::after { width: 102px; height: 102px; right: 29px; }
+    .cloud-one { top: 15px; left: 13%; transform: scale(0.75); }
+    .cloud-two { top: 17px; right: 17%; transform: scale(0.9); }
+    .cloud-three { top: 65px; left: 49%; transform: scale(1.15); }
+
+    .navigation {
+      position: relative;
+      z-index: 2;
+      display: flex;
+      justify-content: center;
+      gap: 11px;
+      padding: 18px 20px 21px;
+    }
+
+    .nav-button {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 45px;
+      padding: 0 20px;
+      border: 1px solid rgba(194, 222, 255, 0.28);
+      border-radius: 16px;
+      color: var(--ink);
+      background: var(--nav);
+      box-shadow: inset 0 1px rgba(255, 255, 255, 0.28), 0 7px 16px rgba(11, 31, 67, 0.2);
+      backdrop-filter: blur(13px) saturate(140%);
+      font: 800 14px "Nunito Sans", sans-serif;
+      cursor: pointer;
+      transition: transform 160ms ease, background 160ms ease;
+    }
+
+    .nav-button:hover { transform: translateY(-2px); background: var(--nav-active); }
+    .nav-button.active { background: var(--nav-active); }
+    .nav-button svg { width: 18px; height: 18px; stroke-width: 2.3; }
+    .nav-badge {
+      position: absolute;
+      top: -8px;
+      right: -8px;
+      min-width: 20px;
+      height: 20px;
+      padding: 0 5px;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      background: #ef4444;
+      font: 800 11px "Nunito Sans", sans-serif;
+      box-shadow: 0 2px 6px rgba(6, 18, 40, 0.4);
+    }
+    .nav-badge[hidden] { display: none; }
+
+    .landscape {
+      position: absolute;
+      z-index: 0;
+      right: -4vw;
+      bottom: -14vh;
+      left: -4vw;
+      height: 35vh;
+      border-radius: 49% 51% 0 0 / 27% 25% 0 0;
+      background: var(--hills);
+      transform: rotate(-2deg);
+    }
+
+    .landscape::before, .landscape::after {
+      position: absolute;
+      bottom: -11vh;
+      border-radius: 50% 50% 0 0;
+      content: "";
+    }
+
+    .landscape::before { left: -8%; width: 53%; height: 27vh; background: #3d76aa; }
+    .landscape::after { right: -3%; width: 48%; height: 30vh; background: var(--hills-dark); }
+
+    .spore {
+      position: absolute;
+      z-index: 0;
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: rgba(232, 247, 255, 0.7);
+      box-shadow: 0 0 12px rgba(215, 240, 255, 0.78);
+      animation: drift 10s ease-in-out infinite;
+    }
+
+    .spore-one { top: 21%; left: 8%; animation-delay: -2s; }
+    .spore-two { top: 42%; left: 23%; width: 4px; height: 4px; animation-delay: -6s; }
+    .spore-three { top: 30%; right: 13%; animation-delay: -4s; }
+    .spore-four { top: 61%; right: 29%; width: 4px; height: 4px; animation-delay: -8s; }
+
+    @keyframes drift {
+      0%, 100% { transform: translate3d(0, 0, 0); opacity: 0.32; }
+      50% { transform: translate3d(22px, -32px, 0); opacity: 0.9; }
+    }
+
+    .table-shell {
+      position: relative;
+      z-index: 1;
+      width: 100%;
+      min-width: 0;
+      margin: 0;
+      overflow: hidden;
+      border: 1px solid rgba(165, 205, 255, 0.34);
+      border-radius: 16px;
+      background: rgba(23, 65, 126, 0.31);
+      box-shadow: inset 0 1px rgba(255, 255, 255, 0.19), 0 16px 34px rgba(10, 32, 67, 0.18);
+      backdrop-filter: blur(16px) saturate(135%);
+      flex: 1 1 100%;
+    }
+
+    .dashboard-row {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      align-items: flex-start;
+      gap: 16px;
+      width: min(99%, 1700px);
+      margin: 0 auto;
+    }
+
+    .dashboard-row.drawer-open .table-shell { flex: 1 1 58%; }
+
+    .device-drawer {
+      flex: 0 0 0%;
+      width: 0;
+      overflow: hidden;
+      opacity: 0;
+      transition: opacity 200ms ease;
+    }
+
+    .dashboard-row.drawer-open .device-drawer {
+      flex: 1 1 42%;
+      width: auto;
+      opacity: 1;
+    }
+
+    .device-drawer-card {
+      position: fixed;
+      top: 16px;
+      bottom: 16px;
+      z-index: 20;
+      width: 100%;
+      overflow-y: auto;
+      color: var(--ink);
+      border: 1px solid rgba(165, 205, 255, 0.34);
+      border-radius: 16px;
+      background: rgba(23, 65, 126, 0.31);
+      box-shadow: inset 0 1px rgba(255, 255, 255, 0.19), 0 16px 34px rgba(10, 32, 67, 0.3);
+      backdrop-filter: blur(16px) saturate(135%);
+    }
+    .drawer-sticky-top {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      background: rgba(23, 39, 68, 0.92);
+      backdrop-filter: blur(16px) saturate(135%);
+      border-radius: 16px 16px 0 0;
+      border-bottom: 1px solid rgba(194, 222, 255, 0.22);
+      box-shadow: 0 8px 14px rgba(8, 22, 46, 0.24);
+    }
+
+    .drawer-loading, .drawer-empty {
+      margin: 0;
+      padding: 18px;
+      color: rgba(247, 250, 255, 0.78);
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .drawer-retry {
+      margin: 0 18px;
+      padding: 6px 14px;
+      border: 1px solid rgba(194, 222, 255, 0.34);
+      border-radius: 8px;
+      color: var(--ink);
+      background: rgba(83, 143, 211, 0.28);
+      font: 800 12px "Nunito Sans", sans-serif;
+      cursor: pointer;
+    }
+    .drawer-retry:hover { background: rgba(83, 143, 211, 0.44); }
+
+    .drawer-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 16px 18px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .drawer-title-group { display: flex; align-items: center; gap: 12px; min-width: 0; }
+    .drawer-icon {
+      display: grid;
+      flex: 0 0 auto;
+      place-items: center;
+      overflow: hidden;
+      width: 42px;
+      height: 42px;
+      border: 1px solid rgba(194, 222, 255, 0.28);
+      border-radius: 10px;
+      background: rgba(83, 143, 211, 0.38);
+      color: var(--ink);
+    }
+    .drawer-icon svg { width: 20px; height: 20px; }
+    .drawer-icon img { width: 100%; height: 100%; object-fit: contain; background: #ffffff; }
+    .drawer-heading { min-width: 0; }
+    .drawer-serial-tag { display: inline-block; margin-bottom: 4px; padding: 2px 8px; border-radius: 6px; background: rgba(34, 211, 238, 0.16); color: #67e8f9; font-size: 10px; font-weight: 800; letter-spacing: 0.04em; font-family: "SFMono-Regular", Consolas, monospace; }
+    .drawer-heading h3 { margin: 0; overflow: hidden; color: var(--ink); font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
+    .drawer-heading span { display: block; overflow: hidden; color: rgba(247, 250, 255, 0.7); font-size: 11px; font-weight: 800; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; letter-spacing: 0.03em; }
+
+    .drawer-header-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
+    .drawer-status-badge {
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+    .drawer-status-badge.active { color: #b7f3d1; background: rgba(31, 178, 122, 0.28); }
+    .drawer-status-badge.expired { color: #ffc9c9; background: rgba(239, 68, 68, 0.28); }
+
+    .drawer-close {
+      display: grid;
+      place-items: center;
+      width: 28px;
+      height: 28px;
+      border: 0;
+      border-radius: 8px;
+      color: var(--ink);
+      background: transparent;
+      cursor: pointer;
+    }
+    .drawer-close:hover { background: rgba(140, 195, 242, 0.35); }
+    .drawer-close svg { width: 16px; height: 16px; }
+
+    .drawer-stats {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      padding: 14px 18px 4px;
+    }
+    .drawer-stat {
+      overflow: hidden;
+      padding: 8px 6px;
+      border: 1px solid rgba(194, 222, 255, 0.28);
+      border-radius: 10px;
+      text-align: center;
+      background: rgba(14, 49, 103, 0.36);
+    }
+    .drawer-stat .value { overflow: hidden; color: var(--ink); font-size: 15px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
+    .drawer-stat .label { margin-top: 2px; color: rgba(247, 250, 255, 0.65); font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.03em; }
+
+    .drawer-tabs { display: flex; gap: 6px; padding: 14px 18px 14px; }
+    .drawer-tab {
+      padding: 6px 12px;
+      border: 0;
+      border-radius: 8px;
+      color: rgba(247, 250, 255, 0.72);
+      background: transparent;
+      font: 800 12px "Nunito Sans", sans-serif;
+      cursor: pointer;
+    }
+    .drawer-tab.active { color: var(--ink); background: var(--nav-active); }
+
+    .drawer-panel { padding: 18px 18px 22px; }
+    .drawer-panel[hidden] { display: none; }
+    .drawer-panel, .drawer-panel * { min-width: 0; }
+
+    .coverage-note { margin: 0 0 12px; color: rgba(247, 250, 255, 0.72); font-size: 12px; font-weight: 700; }
+    .plan-row { margin-bottom: 12px; }
+    .plan-row-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; color: var(--ink); font-size: 12px; font-weight: 800; }
+    .plan-bar-track { height: 6px; overflow: hidden; border-radius: 999px; background: rgba(255, 255, 255, 0.16); }
+    .plan-bar-fill { height: 100%; border-radius: 999px; }
+    .plan-row-dates { display: flex; justify-content: space-between; margin-top: 4px; color: rgba(247, 250, 255, 0.6); font-size: 10px; font-weight: 700; }
+
+    .marketplace-card { margin: 4px 0 16px; padding: 10px 12px; border: 1px solid rgba(194, 222, 255, 0.28); border-radius: 10px; background: rgba(14, 49, 103, 0.36); }
+    .marketplace-card .kicker { color: rgba(247, 250, 255, 0.65); font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; }
+    .marketplace-card h4 { margin: 3px 0 8px; color: var(--ink); font-size: 14px; }
+    .marketplace-card p { margin: 3px 0; color: rgba(247, 250, 255, 0.78); font-size: 12px; }
+
+    .inventory-card { margin: 4px 0 16px; padding: 14px 14px 8px; border: 1px solid rgba(194, 222, 255, 0.28); border-radius: 12px; background: rgba(14, 49, 103, 0.36); }
+    .inventory-card .kicker { display: block; margin-bottom: 10px; color: rgba(247, 250, 255, 0.65); font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; }
+    .inventory-table { width: 100%; min-width: 0; border-collapse: collapse; font-size: 12px; }
+    .inventory-table th { padding: 4px 8px 10px; color: rgba(247, 250, 255, 0.55); text-align: left; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.03em; }
+    .inventory-table th.num { text-align: center; }
+    .inventory-table th:nth-child(1), .inventory-table th:nth-child(3) { text-align: center; }
+    .inventory-table td { padding: 10px 8px; border-top: 1px solid rgba(174, 209, 255, 0.14); color: var(--ink); font-size: 12px; font-weight: 700; }
+    .inventory-table td.num { text-align: center; }
+    .inventory-table td:nth-child(1), .inventory-table td:nth-child(3) { text-align: center; }
+    .lot-chip { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 800; color: #bcdcff; background: rgba(59, 130, 246, 0.28); }
+    .qty-chip { display: inline-block; min-width: 20px; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 800; }
+    .qty-chip.amber { color: #ffdca6; background: rgba(217, 142, 33, 0.32); }
+    .qty-chip.neutral { color: rgba(247, 250, 255, 0.55); background: rgba(255, 255, 255, 0.1); }
+    .qty-chip.green { color: #b7f3d1; background: rgba(31, 178, 122, 0.28); }
+    .qty-chip.red { color: #ffc9c9; background: rgba(239, 68, 68, 0.28); }
+    .inventory-total { display: flex; align-items: center; justify-content: space-between; margin-top: 2px; padding: 12px 8px 4px; border-top: 1px solid rgba(174, 209, 255, 0.24); }
+    .inventory-total > span { color: rgba(247, 250, 255, 0.65); font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.03em; }
+    .inventory-total-values { display: flex; gap: 26px; }
+    .inventory-total-values > div { display: flex; flex-direction: column; align-items: center; }
+    .inventory-total-label { color: rgba(247, 250, 255, 0.55); font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.03em; }
+    .inventory-total-value { font-size: 16px; font-weight: 800; }
+    .inventory-total-value.amber { color: #f5b942; }
+    .inventory-total-value.neutral { color: rgba(247, 250, 255, 0.55); }
+    .inventory-total-value.green { color: #35d488; }
+    .inventory-total-value.red { color: #ff6b6b; }
+
+    .warranty-table { width: 100%; min-width: 0; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
+    .warranty-table th {
+      padding: 6px 8px;
+      border-bottom: 1px solid var(--line);
+      color: rgba(247, 250, 255, 0.65);
+      text-align: center;
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+    .warranty-table td { padding: 7px 8px; border-bottom: 1px solid rgba(174, 209, 255, 0.14); color: var(--ink); text-align: center; white-space: normal; overflow-wrap: anywhere; }
+    .warranty-table .col-plan { width: 34%; }
+    .warranty-table .col-code { width: 12%; }
+    .warranty-table .col-start { width: 18%; }
+    .warranty-table .col-end { width: 18%; }
+    .warranty-table .col-status { width: 18%; }
+    .drawer-panel[data-panel="parts"] .warranty-table .col-plan { width: 27%; }
+    .drawer-panel[data-panel="parts"] .warranty-table .col-code { width: 20%; white-space: nowrap; overflow-wrap: normal; }
+    .drawer-panel[data-panel="parts"] .warranty-table .col-start { width: 18%; }
+    .drawer-panel[data-panel="parts"] .warranty-table .col-end { width: 18%; }
+    .drawer-panel[data-panel="parts"] .warranty-table .col-status { width: 17%; }
+    .warranty-table .status-icon { font-size: 15px; font-weight: 800; line-height: 1; }
+
+    .claim-card { padding: 10px 12px; border: 1px solid rgba(194, 222, 255, 0.28); border-radius: 10px; background: rgba(14, 49, 103, 0.36); margin-bottom: 10px; }
+    .claim-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 14px; }
+    .claim-grid .k { display: block; color: rgba(247, 250, 255, 0.6); font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.03em; }
+    .claim-grid .v { display: block; overflow: hidden; color: var(--ink); font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+
+    .cell-sn { color: #8ec4ff; font-weight: 800; }
+    .cell-sr { font-family: "Consolas", "SFMono-Regular", Menlo, monospace; }
+    .cell-sr-issue { color: #f6ad55; font-weight: 800; cursor: help; }
+
+    .table-status {
+      min-height: 36px;
+      padding: 10px 20px;
+      border-bottom: 1px solid var(--line);
+      color: rgba(247, 250, 255, 0.86);
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .table-controls {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 20px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .dashboard-mode-switch {
+      display: flex;
+      gap: 8px;
+      padding: 0 20px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    .mode-button {
+      padding: 7px 16px;
+      border: 1px solid rgba(194, 222, 255, 0.28);
+      border-radius: 10px;
+      color: rgba(247, 250, 255, 0.75);
+      background: rgba(83, 143, 211, 0.2);
+      font: 800 12px "Nunito Sans", sans-serif;
+      cursor: pointer;
+      transition: background 160ms ease, color 160ms ease;
+    }
+    .mode-button:hover { background: rgba(140, 195, 242, 0.35); }
+    .mode-button.active { color: var(--ink); background: var(--nav-active); }
+
+    .yield-date-field {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: rgba(247, 250, 255, 0.72);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .yield-date-input {
+      height: 34px;
+      padding: 0 10px;
+      border: 1px solid rgba(194, 222, 255, 0.3);
+      border-radius: 8px;
+      outline: 0;
+      color: var(--ink);
+      background: rgba(14, 49, 103, 0.36);
+      font: 700 13px "Nunito Sans", sans-serif;
+      color-scheme: dark;
+    }
+    .page-button.yield-apply { width: auto; min-width: 0; padding: 0 16px; font: 800 12px "Nunito Sans", sans-serif; }
+    .station-modal-select {
+      height: 34px;
+      padding: 0 10px;
+      border: 1px solid rgba(194, 222, 255, 0.3);
+      border-radius: 8px;
+      outline: 0;
+      color: var(--ink);
+      background: rgba(14, 49, 103, 0.36);
+      font: 700 13px "Nunito Sans", sans-serif;
+      color-scheme: dark;
+      cursor: pointer;
+    }
+    .station-modal-select option { color: #0b1f43; }
+
+    .yield-view[hidden] { display: none; }
+    .yield-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+      gap: 16px;
+      padding: 16px 20px 22px;
+    }
+    .yield-card {
+      overflow: hidden;
+      border: 1px solid rgba(194, 222, 255, 0.28);
+      border-radius: 12px;
+      background: rgba(14, 49, 103, 0.36);
+    }
+    .yield-card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      background: rgba(15, 48, 105, 0.58);
+      color: var(--ink);
+      font-size: 13px;
+      font-weight: 800;
+    }
+    .yield-card-header .count { color: rgba(247, 250, 255, 0.65); font-size: 11px; font-weight: 700; }
+    .yield-table { width: 100%; min-width: 0; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
+    .yield-table th {
+      padding: 6px 8px;
+      color: rgba(247, 250, 255, 0.65);
+      text-align: center;
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+    .yield-table td { padding: 6px 8px; color: var(--ink); text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .yield-table .col-station { width: 46%; text-align: left; }
+    .yield-table .col-input, .yield-table .col-failed { width: 16%; }
+    .yield-table .col-pass { width: 22%; }
+    .yield-row-rank1 { background: rgba(239, 68, 68, 0.34); }
+    .yield-row-rank2 { background: rgba(250, 204, 21, 0.4); }
+    .yield-row-rank3 { background: rgba(56, 152, 240, 0.32); }
+    .yield-empty { padding: 18px; color: rgba(247, 250, 255, 0.7); font-size: 13px; font-weight: 700; }
+    .yield-table tbody tr { cursor: pointer; transition: filter 150ms ease; }
+    .yield-table tbody tr:hover { filter: brightness(1.2); }
+
+    .station-modal-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: rgba(8, 20, 40, 0.55);
+      backdrop-filter: blur(4px);
+    }
+    .station-modal-overlay[hidden] { display: none; }
+    .station-modal-card {
+      display: flex;
+      width: min(920px, 100%);
+      max-height: 82vh;
+      flex-direction: column;
+      overflow: hidden;
+      border: 1px solid rgba(165, 205, 255, 0.34);
+      border-radius: 16px;
+      background: rgba(23, 65, 126, 0.94);
+      box-shadow: 0 24px 48px rgba(6, 18, 40, 0.5);
+      backdrop-filter: blur(16px) saturate(135%);
+    }
+    .station-modal-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--line);
+    }
+    .station-modal-header h3 { margin: 0; color: var(--ink); font-size: 16px; }
+    .station-modal-header p { margin: 4px 0 0; color: rgba(247, 250, 255, 0.72); font-size: 12px; font-weight: 700; }
+    .station-modal-header-actions { display: flex; align-items: center; gap: 6px; }
+    .station-modal-export {
+      display: grid;
+      place-items: center;
+      width: 30px;
+      height: 30px;
+      border: 0;
+      border-radius: 8px;
+      color: #35d488;
+      background: transparent;
+      cursor: pointer;
+    }
+    .station-modal-export:hover { background: rgba(53, 212, 136, 0.22); }
+    .station-modal-close {
+      display: grid;
+      place-items: center;
+      width: 30px;
+      height: 30px;
+      border: 0;
+      border-radius: 8px;
+      color: var(--ink);
+      background: transparent;
+      cursor: pointer;
+    }
+    .station-modal-close:hover { background: rgba(140, 195, 242, 0.35); }
+    .station-modal-body { overflow-y: auto; }
+    .station-modal-filters { display: flex; align-items: center; gap: 10px; padding: 0 20px 14px; }
+    #exchange-modal-card { width: min(1240px, 96vw); }
+    #exception-modal-card { width: min(1240px, 96vw); }
+    .station-modal-table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
+    .station-modal-table th {
+      position: sticky;
+      top: 0;
+      padding: 8px 12px;
+      background: rgba(15, 48, 105, 0.94);
+      color: rgba(247, 250, 255, 0.75);
+      text-align: center;
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+    .station-modal-table td { padding: 7px 12px; border-top: 1px solid rgba(174, 209, 255, 0.14); color: var(--ink); overflow-wrap: anywhere; }
+    .station-modal-table tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.03); }
+    .station-modal-table tbody tr:hover { background: rgba(140, 195, 242, 0.14); }
+    .station-modal-table tr.row-failed { background: rgba(239, 68, 68, 0.22); }
+    .station-modal-table tr.row-failed td { color: #ffd0d0; }
+    .station-modal-table .col-seq { width: 44px; text-align: center; }
+    .station-modal-table .col-serial { width: 16%; text-align: center; }
+    .pack-table { table-layout: auto; }
+    .pack-table th, .pack-table td { white-space: nowrap; overflow-wrap: normal; }
+    .pack-table .col-seq { width: 34px; padding-right: 4px; padding-left: 12px; color: rgba(247, 250, 255, 0.5); font-weight: 700; text-align: center; }
+    .pack-table .col-sr { text-align: center; }
+    .pack-table .col-keyin { text-align: center; color: rgba(247, 250, 255, 0.78); }
+    .pack-table .col-serial { text-align: center; font-weight: 800; letter-spacing: 0.02em; }
+    .pack-table .col-product { text-align: center; }
+    .pack-table .col-disposition { text-align: center; }
+    .pack-table .col-issue { text-align: center; max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+    .pack-table .col-user { text-align: center; }
+    .pack-table .col-time { text-align: center; color: rgba(247, 250, 255, 0.78); }
+    .station-modal-table .col-product { width: 16%; text-align: center; }
+    .station-modal-table .col-model { width: 24%; text-align: center; white-space: nowrap; }
+    .station-modal-table .col-code { width: 12%; text-align: center; }
+    .station-modal-table .col-desc { width: 26%; text-align: center; }
+    .station-modal-empty { padding: 24px; color: rgba(247, 250, 255, 0.72); font-size: 13px; font-weight: 700; text-align: center; }
+
+    .search-input {
+      width: min(360px, 100%);
+      height: 34px;
+      padding: 0 12px 0 36px;
+      border: 1px solid rgba(194, 222, 255, 0.3);
+      border-radius: 8px;
+      outline: 0;
+      color: var(--ink);
+      background: rgba(14, 49, 103, 0.36);
+      font: 700 13px "Nunito Sans", sans-serif;
+    }
+
+    .search-input::placeholder { color: rgba(247, 250, 255, 0.66); }
+    .search-input:focus { border-color: rgba(194, 222, 255, 0.72); }
+    .search-input[type="search"]::-webkit-search-cancel-button { cursor: pointer; }
+    .search-input[type="search"]::-ms-clear { cursor: pointer; }
+    .search-field { position: relative; width: min(360px, 100%); }
+    .search-field svg { position: absolute; top: 9px; left: 12px; width: 16px; height: 16px; color: rgba(247, 250, 255, 0.74); pointer-events: none; }
+
+    .sync-time { margin-left: auto; color: rgba(247, 250, 255, 0.7); font-size: 12px; font-weight: 700; }
+
+    .table-footer {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+      min-height: 54px;
+      padding: 10px 20px;
+      border-top: 1px solid var(--line);
+    }
+
+    .page-range {
+      min-width: 160px;
+      color: rgba(247, 250, 255, 0.86);
+      font-size: 13px;
+      font-weight: 700;
+      text-align: center;
+    }
+
+    .page-button {
+      display: grid;
+      width: 32px;
+      height: 32px;
+      place-items: center;
+      border: 1px solid rgba(194, 222, 255, 0.28);
+      border-radius: 8px;
+      color: var(--ink);
+      background: rgba(83, 143, 211, 0.38);
+      cursor: pointer;
+    }
+
+    .page-button:hover:not(:disabled) { background: var(--nav-active); }
+    .page-button:disabled { cursor: not-allowed; opacity: 0.4; }
+    .page-button svg { width: 16px; height: 16px; }
+
+    .table-scroll { overflow-x: auto; }
+    .table-scroll table { width: 100%; min-width: 1620px; border-collapse: collapse; table-layout: fixed; }
+    .table-scroll thead { background: var(--table-head); }
+    .table-scroll th {
+      height: 45px;
+      padding: 0 20px;
+      color: #ffffff;
+      text-align: center;
+      font-size: 14px;
+      font-weight: 800;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .table-scroll td {
+      height: 45px;
+      border-top: 1px solid var(--line);
+      padding: 0 20px;
+      text-align: center;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .table-scroll tbody tr:nth-child(odd) { background: var(--row-one); }
+    .table-scroll tbody tr:nth-child(even) { background: var(--row-two); }
+    .table-scroll tbody tr { transition: background 170ms ease; cursor: pointer; }
+    .table-scroll tbody tr:hover { background: rgba(140, 195, 242, 0.48); }
+    .table-scroll tbody tr.row-selected { background: rgba(90, 150, 235, 0.55) !important; }
+    .table-scroll th:nth-child(1) { width: 160px; }
+    .table-scroll th:nth-child(2) { width: 210px; }
+    .table-scroll th:nth-child(3) { width: 220px; }
+    .table-scroll th:nth-child(4) { width: 250px; }
+    .table-scroll th:nth-child(5) { width: 220px; }
+    .table-scroll th:nth-child(6) { width: 150px; }
+    .table-scroll th:nth-child(7) { width: 150px; }
+    .table-scroll th:nth-child(8) { width: 150px; }
+    .table-scroll th:nth-child(9) { width: 110px; }
+
+    @media (max-width: 800px) {
+      body { overflow: auto; }
+      .app { min-height: 100svh; }
+      .navigation { justify-content: flex-start; overflow-x: auto; padding-inline: 14px; }
+      .nav-button { flex: 0 0 auto; border-radius: 13px; padding: 0 15px; font-size: 13px; }
+      .table-shell { width: calc(100% - 24px); border-radius: 12px; }
+      .dashboard-row { width: calc(100% - 24px); flex-direction: column; }
+      .dashboard-row.drawer-open .table-shell { flex: 1 1 auto; }
+      .dashboard-row.drawer-open .device-drawer { flex: 1 1 auto; width: 100%; }
+      .device-drawer-card { top: 8px; bottom: 8px; border-radius: 12px; }
+      .table-controls { flex-wrap: wrap; }
+      .search-field { flex: 1 1 220px; }
+      .sync-time { margin-left: 0; }
+      .cloud-one { left: -12%; }
+      .cloud-two { right: -24%; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <div class="spore spore-one"></div>
+    <div class="spore spore-two"></div>
+    <div class="spore spore-three"></div>
+    <div class="spore spore-four"></div>
+
+    <nav class="navigation" aria-label="Dashboard sections">
+      <button class="nav-button" id="nav-wip" type="button"><i data-lucide="layers"></i>WIP<span class="nav-badge" id="wip-badge" hidden>0</span></button>
+      <button class="nav-button" id="nav-exchanges" type="button"><i data-lucide="arrow-left-right"></i>Exchanges<span class="nav-badge" id="exchange-badge" hidden>0</span></button>
+      <button class="nav-button" id="nav-exception" type="button"><i data-lucide="triangle-alert"></i>Exception<span class="nav-badge" id="exception-badge" hidden>0</span></button>
+      <button class="nav-button active" type="button"><i data-lucide="trending-up"></i>Performance<span class="nav-badge" id="performance-badge" hidden>0%</span></button>
+      <button class="nav-button" id="nav-pack" type="button"><i data-lucide="box"></i>Pack<span class="nav-badge" id="pack-badge" hidden>0</span></button>
+    </nav>
+
+    <div class="dashboard-row" id="dashboard-row">
+      <section class="table-shell" aria-label="Performance work orders">
+        <div class="table-status" id="table-status" aria-live="polite">Loading active serial numbers...</div>
+        <div class="dashboard-mode-switch" role="tablist" aria-label="Dashboard type">
+          <button class="mode-button active" id="mode-wip" type="button" role="tab" aria-selected="true">Daily WIP</button>
+          <button class="mode-button" id="mode-yield" type="button" role="tab" aria-selected="false">Station Yield</button>
+        </div>
+        <div class="table-controls" id="wip-controls">
+          <label class="search-field" aria-label="Search active serial numbers">
+            <i data-lucide="search"></i>
+            <input class="search-input" id="table-search" type="search" placeholder="SR, SN, Product, Model, or Status" />
+          </label>
+          <button class="page-button" id="refresh-data" type="button" aria-label="Refresh active serial numbers"><i data-lucide="refresh-cw"></i></button>
+          <span class="sync-time" id="sync-time"></span>
+        </div>
+        <div class="table-scroll" id="wip-view">
+          <table>
+            <thead>
+              <tr><th>SR</th><th>SN</th><th>Product</th><th>Model</th><th>Status</th><th>SKU</th><th>INV</th><th>LOC</th><th>Idle Hours</th></tr>
+            </thead>
+            <tbody id="active-sns"></tbody>
+          </table>
+        </div>
+        <div class="table-footer" id="wip-footer">
+          <button class="page-button" id="previous-page" type="button" aria-label="Previous page"><i data-lucide="chevron-left"></i></button>
+          <span class="page-range" id="page-range"></span>
+          <button class="page-button" id="next-page" type="button" aria-label="Next page"><i data-lucide="chevron-right"></i></button>
+        </div>
+        <div class="yield-view" id="yield-view" hidden>
+          <div class="table-controls">
+            <label class="yield-date-field">From
+              <input class="yield-date-input" id="yield-begin" type="date" />
+            </label>
+            <label class="yield-date-field">To
+              <input class="yield-date-input" id="yield-end" type="date" />
+            </label>
+            <button class="page-button yield-apply" id="yield-apply" type="button" aria-label="Apply date range">Apply</button>
+            <button class="page-button" id="refresh-yield" type="button" aria-label="Refresh station yield"><i data-lucide="refresh-cw"></i></button>
+            <span class="sync-time" id="yield-sync-time"></span>
+          </div>
+          <div class="yield-grid" id="yield-grid"></div>
+        </div>
+      </section>
+      <aside class="device-drawer" id="device-drawer" aria-label="Device details">
+        <div class="device-drawer-card" id="drawer-body"></div>
+      </aside>
+    </div>
+    <div class="landscape"></div>
+    <div class="station-modal-overlay" id="station-modal" hidden>
+      <div class="station-modal-card">
+        <div class="station-modal-header">
+          <div>
+            <h3 id="station-modal-title">Station SNs</h3>
+            <p id="station-modal-subtitle"></p>
+          </div>
+          <button class="station-modal-close" id="station-modal-close" type="button" aria-label="Close"><i data-lucide="x"></i></button>
+        </div>
+        <div class="station-modal-body" id="station-modal-body"></div>
+      </div>
+    </div>
+    <div class="station-modal-overlay" id="pack-modal" hidden>
+      <div class="station-modal-card" id="pack-modal-card">
+        <div class="station-modal-header">
+          <div>
+            <h3 id="pack-modal-title">Pack</h3>
+            <p id="pack-modal-subtitle"></p>
+          </div>
+          <button class="station-modal-close" id="pack-modal-close" type="button" aria-label="Close"><i data-lucide="x"></i></button>
+        </div>
+        <div class="station-modal-filters">
+          <label class="yield-date-field">From
+            <input class="yield-date-input" id="pack-begin" type="date" />
+          </label>
+          <label class="yield-date-field">To
+            <input class="yield-date-input" id="pack-end" type="date" />
+          </label>
+          <button class="page-button yield-apply" id="pack-apply" type="button" aria-label="Apply date range">Apply</button>
+        </div>
+        <div class="station-modal-body" id="pack-modal-body"></div>
+      </div>
+    </div>
+    <div class="station-modal-overlay" id="exchange-modal" hidden>
+      <div class="station-modal-card" id="exchange-modal-card">
+        <div class="station-modal-header">
+          <div>
+            <h3 id="exchange-modal-title">Exchanges</h3>
+            <p id="exchange-modal-subtitle"></p>
+          </div>
+          <div class="station-modal-header-actions">
+            <button class="station-modal-export" id="exchange-modal-export" type="button" aria-label="Export to Excel"><i data-lucide="file-spreadsheet"></i></button>
+            <button class="station-modal-close" id="exchange-modal-close" type="button" aria-label="Close"><i data-lucide="x"></i></button>
+          </div>
+        </div>
+        <div class="station-modal-filters">
+          <label class="yield-date-field">From
+            <input class="yield-date-input" id="exchange-begin" type="date" />
+          </label>
+          <label class="yield-date-field">To
+            <input class="yield-date-input" id="exchange-end" type="date" />
+          </label>
+          <button class="page-button yield-apply" id="exchange-apply" type="button" aria-label="Apply date range">Apply</button>
+          <label class="yield-date-field">Disposition
+            <select class="station-modal-select" id="exchange-disposition-filter">
+              <option value="">All</option>
+            </select>
+          </label>
+        </div>
+        <div class="station-modal-body" id="exchange-modal-body"></div>
+      </div>
+    </div>
+    <div class="station-modal-overlay" id="exception-modal" hidden>
+      <div class="station-modal-card" id="exception-modal-card">
+        <div class="station-modal-header">
+          <div>
+            <h3 id="exception-modal-title">Exception</h3>
+            <p id="exception-modal-subtitle"></p>
+          </div>
+          <div class="station-modal-header-actions">
+            <button class="station-modal-export" id="exception-modal-export" type="button" aria-label="Export to Excel"><i data-lucide="file-spreadsheet"></i></button>
+            <button class="station-modal-close" id="exception-modal-close" type="button" aria-label="Close"><i data-lucide="x"></i></button>
+          </div>
+        </div>
+        <div class="station-modal-filters">
+          <label class="yield-date-field">From
+            <input class="yield-date-input" id="exception-begin" type="date" />
+          </label>
+          <label class="yield-date-field">To
+            <input class="yield-date-input" id="exception-end" type="date" />
+          </label>
+          <button class="page-button yield-apply" id="exception-apply" type="button" aria-label="Apply date range">Apply</button>
+        </div>
+        <div class="station-modal-body" id="exception-modal-body"></div>
+      </div>
+    </div>
+  </main>
+  <script>lucide.createIcons();</script>
+  <script>
+    lucide.createIcons();
+
+    const tableBody = document.querySelector("#active-sns");
+    const tableStatus = document.querySelector("#table-status");
+    const previousPageButton = document.querySelector("#previous-page");
+    const nextPageButton = document.querySelector("#next-page");
+    const pageRange = document.querySelector("#page-range");
+    const searchInput = document.querySelector("#table-search");
+    const refreshButton = document.querySelector("#refresh-data");
+    const syncTime = document.querySelector("#sync-time");
+    const dashboardRow = document.querySelector("#dashboard-row");
+    const deviceDrawer = document.querySelector("#device-drawer");
+    const drawerBody = document.querySelector("#drawer-body");
+    const modeWipButton = document.querySelector("#mode-wip");
+    const modeYieldButton = document.querySelector("#mode-yield");
+    const wipControls = document.querySelector("#wip-controls");
+    const wipView = document.querySelector("#wip-view");
+    const wipFooter = document.querySelector("#wip-footer");
+    const yieldView = document.querySelector("#yield-view");
+    const yieldGrid = document.querySelector("#yield-grid");
+    const refreshYieldButton = document.querySelector("#refresh-yield");
+    const yieldSyncTime = document.querySelector("#yield-sync-time");
+    const yieldBeginInput = document.querySelector("#yield-begin");
+    const yieldEndInput = document.querySelector("#yield-end");
+    const yieldApplyButton = document.querySelector("#yield-apply");
+    const stationModal = document.querySelector("#station-modal");
+    const stationModalTitle = document.querySelector("#station-modal-title");
+    const stationModalSubtitle = document.querySelector("#station-modal-subtitle");
+    const stationModalBody = document.querySelector("#station-modal-body");
+    const stationModalClose = document.querySelector("#station-modal-close");
+    const navPackButton = document.querySelector("#nav-pack");
+    const packBadge = document.querySelector("#pack-badge");
+    const packModal = document.querySelector("#pack-modal");
+    const packModalSubtitle = document.querySelector("#pack-modal-subtitle");
+    const packModalBody = document.querySelector("#pack-modal-body");
+    const packModalClose = document.querySelector("#pack-modal-close");
+    const packBeginInput = document.querySelector("#pack-begin");
+    const packEndInput = document.querySelector("#pack-end");
+    const packApplyButton = document.querySelector("#pack-apply");
+    const wipBadge = document.querySelector("#wip-badge");
+    const performanceBadge = document.querySelector("#performance-badge");
+    const navExchangesButton = document.querySelector("#nav-exchanges");
+    const exchangeBadge = document.querySelector("#exchange-badge");
+    const exchangeModal = document.querySelector("#exchange-modal");
+    const exchangeModalSubtitle = document.querySelector("#exchange-modal-subtitle");
+    const exchangeModalBody = document.querySelector("#exchange-modal-body");
+    const exchangeModalClose = document.querySelector("#exchange-modal-close");
+    const exchangeModalExport = document.querySelector("#exchange-modal-export");
+    const exchangeBeginInput = document.querySelector("#exchange-begin");
+    const exchangeEndInput = document.querySelector("#exchange-end");
+    const exchangeApplyButton = document.querySelector("#exchange-apply");
+    const exchangeDispositionFilter = document.querySelector("#exchange-disposition-filter");
+    const navExceptionButton = document.querySelector("#nav-exception");
+    const exceptionBadge = document.querySelector("#exception-badge");
+    const exceptionModal = document.querySelector("#exception-modal");
+    const exceptionModalSubtitle = document.querySelector("#exception-modal-subtitle");
+    const exceptionModalBody = document.querySelector("#exception-modal-body");
+    const exceptionModalClose = document.querySelector("#exception-modal-close");
+    const exceptionModalExport = document.querySelector("#exception-modal-export");
+    const exceptionBeginInput = document.querySelector("#exception-begin");
+    const exceptionEndInput = document.querySelector("#exception-end");
+    const exceptionApplyButton = document.querySelector("#exception-apply");
+    const yieldLookbackDays = 6;
+    const pageSize = 100;
+    const refreshIntervalMs = 10 * 60 * 1000;
+    let activeSerialNumbers = [];
+    let filteredSerialNumbers = [];
+    let currentPage = 0;
+    let nextRefreshAt = null;
+    let selectedSerialNumber = null;
+    let dashboardMode = "wip";
+    let yieldRecords = [];
+    let yieldNextRefreshAt = null;
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+      }[char]));
+    }
+
+    function formatDate(value) {
+      if (!value) return "—";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return escapeHtml(value);
+      return date.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" });
+    }
+
+    function warrantyProgress(start, end) {
+      const startDate = new Date(start);
+      const endDate = new Date(end);
+      if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime()) || endDate <= startDate) return 0;
+      const percent = ((Date.now() - startDate.getTime()) / (endDate.getTime() - startDate.getTime())) * 100;
+      return Math.min(100, Math.max(0, Math.round(percent)));
+    }
+
+    function planColor(code) {
+      const colors = { STD: "#3f6fe0", ESP: "#8a5cf5", ADP: "#1fb27a", TSP: "#f5a524", BRS: "#ef4444" };
+      return colors[(code || "").toUpperCase()] || "#3f6fe0";
+    }
+
+    function buildCoveragePanel(details) {
+      const plans = details.warranties || [];
+      const activeCount = plans.filter((plan) => plan.inWarranty).length;
+      const note = plans.length
+        ? `${activeCount} of ${plans.length} plan${plans.length === 1 ? "" : "s"} active`
+        : "No warranty plans found.";
+
+      const bars = plans.map((plan) => `
+        <div class="plan-row">
+          <div class="plan-row-head">
+            <span>${escapeHtml(plan.planCode || plan.planName || "Plan")}</span>
+            <span class="drawer-status-badge ${plan.inWarranty ? "active" : "expired"}">${plan.inWarranty ? "Active" : "Expired"}</span>
+          </div>
+          <div class="plan-bar-track"><div class="plan-bar-fill" style="width:${warrantyProgress(plan.startDate, plan.endDate)}%; background:${planColor(plan.planCode)};"></div></div>
+          <div class="plan-row-dates"><span>${formatDate(plan.startDate)}</span><span>${formatDate(plan.endDate)}</span></div>
+        </div>`).join("");
+
+      const marketplace = `
+        <div class="marketplace-card">
+          <div class="kicker">Marketplace</div>
+          <h4>${escapeHtml(details.marketplace || "—")}</h4>
+          <p>Country of origin: ${escapeHtml(details.countryOfOrigin || "—")}</p>
+          <p>OS: ${escapeHtml(details.operatingSystem || "—")}</p>
+          <p>Part number: ${escapeHtml(details.partNumber || "—")}</p>
+        </div>`;
+
+      const table = plans.length ? `
+        <table class="warranty-table">
+          <thead><tr><th class="col-plan">Plan</th><th class="col-code">Code</th><th class="col-start">Start</th><th class="col-end">End</th><th class="col-status">✓</th></tr></thead>
+          <tbody>${plans.map((plan) => `
+            <tr>
+              <td class="col-plan">${escapeHtml(plan.planName || "—")}</td>
+              <td class="col-code">${escapeHtml(plan.planCode || "—")}</td>
+              <td class="col-start">${formatDate(plan.startDate)}</td>
+              <td class="col-end">${formatDate(plan.endDate)}</td>
+              <td class="col-status"><span class="status-icon">${plan.inWarranty ? "✓" : "✕"}</span></td>
+            </tr>`).join("")}</tbody>
+        </table>` : "";
+
+      return `
+        <p class="coverage-note">${escapeHtml(note)}</p>
+        ${bars || '<p class="drawer-empty">No warranty plans found.</p>'}
+        ${marketplace}
+        ${table}`;
+    }
+
+    function buildTimelinePanel(details) {
+      const claims = details.claims || [];
+      if (!claims.length) return '<p class="drawer-empty">No claims recorded for this device.</p>';
+      return claims.map((claim) => `
+        <div class="claim-card">
+          <div class="claim-grid">
+            <div><span class="k">Order ID</span><span class="v">${escapeHtml(claim.orderId || "—")}</span></div>
+            <div><span class="k">Service Request ID</span><span class="v">${escapeHtml(claim.serviceRequestId || "—")}</span></div>
+            <div><span class="k">Status</span><span class="v">${escapeHtml(claim.status || "—")}</span></div>
+            <div><span class="k">Type</span><span class="v">${escapeHtml(claim.type || "—")}</span></div>
+            <div><span class="k">Issue code</span><span class="v">${escapeHtml(claim.issueCode || "—")}</span></div>
+            <div><span class="k">Device returned</span><span class="v">${claim.deviceReturned === true ? "Yes" : claim.deviceReturned === false ? "No" : "—"}</span></div>
+            <div><span class="k">Entitlement</span><span class="v">${escapeHtml(claim.entitlement || "—")}${claim.warrantyId ? ` · Warranty ID: ${escapeHtml(claim.warrantyId)}` : ""}</span></div>
+            <div><span class="k">Created</span><span class="v">${formatDate(claim.createdDate)}</span></div>
+            <div><span class="k">Modified</span><span class="v">${formatDate(claim.modifiedDate)}</span></div>
+          </div>
+        </div>`).join("");
+    }
+
+    function buildPartsPanel(details) {
+      const parts = details.componentParts || [];
+      if (!parts.length) return '<p class="drawer-empty">No part footprint data available.</p>';
+      return `
+        <table class="warranty-table">
+          <thead><tr><th class="col-plan">Location</th><th class="col-code">Part Number</th><th class="col-start">Part Type</th><th class="col-end">Manufactured</th><th class="col-status">Country</th></tr></thead>
+          <tbody>${parts.map((part) => `
+            <tr>
+              <td class="col-plan">${escapeHtml(part.location || "—")}</td>
+              <td class="col-code">${escapeHtml(part.partNumber || "—")}</td>
+              <td class="col-start">${escapeHtml(part.partType || "—")}</td>
+              <td class="col-end">${formatDate(part.manufacturedDatetime)}</td>
+              <td class="col-status">${escapeHtml(part.countryOfOrigin || "—")}</td>
+            </tr>`).join("")}</tbody>
+        </table>`;
+    }
+
+    function buildInventoryPanel(details) {
+      const rows = details.inventoryProfile || [];
+      if (!rows.length) return '<p class="drawer-empty">No inventory profile data available.</p>';
+      const totalAllocated = rows.reduce((sum, row) => sum + (row.allocatedQty || 0), 0);
+      const totalAvailable = rows.reduce((sum, row) => sum + (row.availableQty || 0), 0);
+      const qtyChip = (value, positiveClass, zeroClass) =>
+        `<span class="qty-chip ${value > 0 ? positiveClass : zeroClass}">${value}</span>`;
+      return `
+        <div class="inventory-card">
+          <span class="kicker">Inventory Profile</span>
+          <table class="inventory-table">
+            <thead>
+              <tr>
+                <th>Warehouse</th>
+                <th>Location</th>
+                <th>Lot</th>
+                <th class="num">Allocated Qty</th>
+                <th class="num">Available Qty</th>
+              </tr>
+            </thead>
+            <tbody>${rows.map((row) => `
+              <tr>
+                <td>${escapeHtml(row.warehouse || "—")}</td>
+                <td>${escapeHtml(row.location || "—")}</td>
+                <td><span class="lot-chip">${escapeHtml(row.lot || "—")}</span></td>
+                <td class="num">${qtyChip(row.allocatedQty || 0, "amber", "neutral")}</td>
+                <td class="num">${qtyChip(row.availableQty || 0, "green", "red")}</td>
+              </tr>`).join("")}
+            </tbody>
+          </table>
+          <div class="inventory-total">
+            <span>Total</span>
+            <div class="inventory-total-values">
+              <div>
+                <span class="inventory-total-label">Allocated</span>
+                <span class="inventory-total-value ${totalAllocated > 0 ? "amber" : "neutral"}">${totalAllocated}</span>
+              </div>
+              <div>
+                <span class="inventory-total-label">Available</span>
+                <span class="inventory-total-value ${totalAvailable > 0 ? "green" : "red"}">${totalAvailable}</span>
+              </div>
+            </div>
+          </div>
+        </div>`;
+    }
+
+    function renderDrawer(record, details) {
+      const status = details.registrationStatus || (record.serviceRequestId ? "Active" : "");
+      const statusClass = /active/i.test(status) ? "active" : "expired";
+      const iconMarkup = details.imageUri
+        ? `<img src="${escapeHtml(details.imageUri)}" alt="" loading="lazy" />`
+        : '<i data-lucide="laptop"></i>';
+      drawerBody.innerHTML = `
+        <div class="drawer-sticky-top">
+          <div class="drawer-header">
+            <div class="drawer-title-group">
+              <div class="drawer-icon">${iconMarkup}</div>
+              <div class="drawer-heading">
+                <div class="drawer-serial-tag">${escapeHtml(record.serialNumber)}</div>
+                <h3>${escapeHtml(record.model || details.series || record.serialNumber)}</h3>
+                <span>${escapeHtml(details.product || record.product || "")}</span>
+              </div>
+            </div>
+            <div class="drawer-header-actions">
+              ${status ? `<span class="drawer-status-badge ${statusClass}">${escapeHtml(status)}</span>` : ""}
+              <button class="drawer-close" id="drawer-close-btn" type="button" aria-label="Close panel"><i data-lucide="x"></i></button>
+            </div>
+          </div>
+          <div class="drawer-stats">
+            <div class="drawer-stat"><div class="value">${(details.claims || []).length}</div><div class="label">Claims</div></div>
+            <div class="drawer-stat"><div class="value">${(details.warranties || []).length}</div><div class="label">Plans</div></div>
+            <div class="drawer-stat"><div class="value">${escapeHtml(details.sku || "—")}</div><div class="label">SKU</div></div>
+            <div class="drawer-stat"><div class="value">${escapeHtml(details.color || "—")}</div><div class="label">Color</div></div>
+          </div>
+          <div class="drawer-tabs">
+            <button class="drawer-tab" data-tab="coverage" type="button">Coverage</button>
+            <button class="drawer-tab" data-tab="timeline" type="button">Claim Timeline</button>
+            <button class="drawer-tab" data-tab="parts" type="button">Part Footprint</button>
+            <button class="drawer-tab" data-tab="inventory" type="button">Inventory</button>
+          </div>
+        </div>
+        <div class="drawer-panel" data-panel="coverage">${buildCoveragePanel(details)}</div>
+        <div class="drawer-panel" data-panel="timeline">${buildTimelinePanel(details)}</div>
+        <div class="drawer-panel" data-panel="parts">${buildPartsPanel(details)}</div>
+        <div class="drawer-panel" data-panel="inventory">${buildInventoryPanel(details)}</div>
+      `;
+      lucide.createIcons();
+
+      const tabs = drawerBody.querySelectorAll(".drawer-tab");
+      const panels = {
+        coverage: drawerBody.querySelector('[data-panel="coverage"]'),
+        timeline: drawerBody.querySelector('[data-panel="timeline"]'),
+        parts: drawerBody.querySelector('[data-panel="parts"]'),
+        inventory: drawerBody.querySelector('[data-panel="inventory"]'),
+      };
+      const setActiveTab = (tab) => {
+        tabs.forEach((btn) => btn.classList.toggle("active", btn.dataset.tab === tab));
+        Object.entries(panels).forEach(([key, panel]) => { panel.hidden = key !== tab; });
+      };
+      tabs.forEach((btn) => btn.addEventListener("click", () => setActiveTab(btn.dataset.tab)));
+      setActiveTab("coverage");
+      drawerBody.querySelector("#drawer-close-btn").addEventListener("click", closeDeviceDrawer);
+    }
+
+    function closeDeviceDrawer() {
+      selectedSerialNumber = null;
+      dashboardRow.classList.remove("drawer-open");
+      tableBody.querySelectorAll("tr.row-selected").forEach((row) => row.classList.remove("row-selected"));
+    }
+
+    function syncDrawerPosition() {
+      if (!dashboardRow.classList.contains("drawer-open")) return;
+      const rect = deviceDrawer.getBoundingClientRect();
+      drawerBody.style.left = `${rect.left}px`;
+      drawerBody.style.width = `${rect.width}px`;
+      drawerBody.style.top = `${Math.max(16, rect.top)}px`;
+    }
+
+    let drawerSyncQueued = false;
+    function queueDrawerSync() {
+      if (drawerSyncQueued) return;
+      drawerSyncQueued = true;
+      requestAnimationFrame(() => {
+        drawerSyncQueued = false;
+        syncDrawerPosition();
+      });
+    }
+
+    window.addEventListener("resize", syncDrawerPosition);
+    window.addEventListener("scroll", queueDrawerSync, { passive: true });
+
+    async function openDeviceDrawer(record, row) {
+      tableBody.querySelectorAll("tr.row-selected").forEach((tr) => tr.classList.remove("row-selected"));
+      row.classList.add("row-selected");
+      selectedSerialNumber = record.serialNumber;
+      dashboardRow.classList.add("drawer-open");
+      requestAnimationFrame(syncDrawerPosition);
+      drawerBody.innerHTML = '<p class="drawer-loading">Loading device details…</p>';
+      await loadDeviceDetails(record);
+    }
+
+    async function loadDeviceDetails(record, attempt = 1) {
+      try {
+        const response = await fetch(`/api/device-details?sn=${encodeURIComponent(record.serialNumber)}`);
+        if (!response.ok) throw new Error("Device details unavailable.");
+        const details = await response.json();
+        if (selectedSerialNumber !== record.serialNumber) return;
+        renderDrawer(record, details);
+      } catch (error) {
+        if (selectedSerialNumber !== record.serialNumber) return;
+        if (attempt < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 900));
+          if (selectedSerialNumber === record.serialNumber) await loadDeviceDetails(record, attempt + 1);
+          return;
+        }
+        drawerBody.innerHTML = `
+          <p class="drawer-loading">Unable to load device details.</p>
+          <button class="drawer-retry" id="drawer-retry-btn" type="button">Retry</button>
+        `;
+        const retryButton = drawerBody.querySelector("#drawer-retry-btn");
+        retryButton?.addEventListener("click", () => {
+          drawerBody.innerHTML = '<p class="drawer-loading">Loading device details…</p>';
+          loadDeviceDetails(record);
+        });
+      }
+    }
+
+    function createSerialRow(record) {
+      const { serialNumber, model, serviceRequestId, product, serviceRequestStatus, status, sku, inv, loc, idleHours } = record;
+      const row = document.createElement("tr");
+      const lookupFailed = !serviceRequestId && /failed|invalid|warranty http/i.test(serviceRequestStatus || "");
+      const values = [
+        {
+          value: serviceRequestId || (lookupFailed ? "⚠" : ""),
+          className: lookupFailed ? "cell-sr cell-sr-issue" : "cell-sr",
+          title: serviceRequestId
+            ? ""
+            : lookupFailed
+              ? `Warranty lookup failed (${serviceRequestStatus}). Refresh to retry.`
+              : (serviceRequestStatus || "No claims on file"),
+        },
+        { value: product || "" },
+        { value: model },
+        { value: status || "" },
+        { value: sku || "" },
+        { value: inv === "" || inv === undefined || inv === null ? "" : String(inv) },
+        { value: loc || "" },
+        { value: idleHours === undefined || idleHours === null ? "" : `${idleHours.toFixed(2)}h` },
+      ];
+      const snCell = document.createElement("td");
+      snCell.textContent = serialNumber;
+      snCell.className = "cell-sn";
+      snCell.title = serialNumber;
+      const srValue = values.shift();
+      const srCell = document.createElement("td");
+      srCell.textContent = srValue.value;
+      srCell.classList.add(...srValue.className.split(" "));
+      if (srValue.title) srCell.title = srValue.title;
+      row.append(srCell, snCell);
+      for (const { value, className } of values) {
+        const cell = document.createElement("td");
+        cell.textContent = value;
+        if (className) cell.classList.add(className);
+        if (value) cell.title = value;
+        row.append(cell);
+      }
+      row.addEventListener("click", () => openDeviceDrawer(record, row));
+      if (serialNumber === selectedSerialNumber) row.classList.add("row-selected");
+      return row;
+    }
+
+    function renderPage() {
+      const start = currentPage * pageSize;
+      const serialNumbers = filteredSerialNumbers.slice(start, start + pageSize);
+      tableBody.replaceChildren(...serialNumbers.map(createSerialRow));
+      const end = start + serialNumbers.length;
+      pageRange.textContent = filteredSerialNumbers.length ? `${(start + 1).toLocaleString()}-${end.toLocaleString()} of ${filteredSerialNumbers.length.toLocaleString()}` : "0 results";
+      previousPageButton.disabled = currentPage === 0;
+      nextPageButton.disabled = end >= filteredSerialNumbers.length;
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+
+    function applyFilters() {
+      const query = searchInput.value.trim().toLowerCase();
+      filteredSerialNumbers = activeSerialNumbers.filter((record) => {
+        const matchesSearch = !query || [record.serialNumber, record.serviceRequestId, record.product, record.model, record.status, record.sku]
+          .some((value) => String(value || "").toLowerCase().includes(query));
+        return matchesSearch;
+      });
+      currentPage = 0;
+      renderPage();
+    }
+
+    function updateSyncTime() {
+      if (!nextRefreshAt) return;
+      const millisecondsRemaining = Math.max(0, nextRefreshAt - Date.now());
+      const minutes = Math.floor(millisecondsRemaining / 60000);
+      const seconds = Math.floor((millisecondsRemaining % 60000) / 1000);
+      syncTime.textContent = `Next refresh ${minutes}:${String(seconds).padStart(2, "0")}`;
+    }
+
+    async function loadActiveSerialNumbers(forceRefresh = false) {
+      try {
+        refreshButton.disabled = true;
+        tableStatus.textContent = "Loading active serial numbers...";
+        const response = await fetch(`/api/active-sns${forceRefresh ? "?refresh=1" : ""}`);
+        if (!response.ok) throw new Error("The active serial number service is unavailable.");
+        const { count, serialNumbers, source } = await response.json();
+        activeSerialNumbers = serialNumbers;
+        wipBadge.textContent = String(count);
+        wipBadge.hidden = !count;
+        const sourceLabel = source === "pegap-tat-items" ? "PMX Agile (live)" : source === "fallback-csv" ? "Fallback CSV" : "Unknown source";
+        tableStatus.textContent = `${count.toLocaleString()} active serial numbers • ${sourceLabel}`;
+        nextRefreshAt = Date.now() + refreshIntervalMs;
+        updateSyncTime();
+        applyFilters();
+      } catch (error) {
+        tableStatus.textContent = "Unable to load active serial numbers.";
+        pageRange.textContent = "No results";
+        previousPageButton.disabled = true;
+        nextPageButton.disabled = true;
+      } finally {
+        refreshButton.disabled = false;
+      }
+    }
+
+    function updateYieldSyncTime() {
+      if (!yieldNextRefreshAt) return;
+      const millisecondsRemaining = Math.max(0, yieldNextRefreshAt - Date.now());
+      const minutes = Math.floor(millisecondsRemaining / 60000);
+      const seconds = Math.floor((millisecondsRemaining % 60000) / 1000);
+      yieldSyncTime.textContent = `Next refresh ${minutes}:${String(seconds).padStart(2, "0")}`;
+    }
+
+    function renderYieldGrid() {
+      if (!yieldRecords.length) {
+        yieldGrid.innerHTML = '<p class="yield-empty">No station yield data available.</p>';
+        return;
+      }
+      const byDate = new Map();
+      for (const record of yieldRecords) {
+        if (!byDate.has(record.date)) byDate.set(record.date, []);
+        byDate.get(record.date).push(record);
+      }
+      const dates = [...byDate.keys()].sort((a, b) => (a < b ? 1 : -1));
+      const rankClasses = ["yield-row-rank1", "yield-row-rank2", "yield-row-rank3"];
+      yieldGrid.innerHTML = dates.map((date) => {
+        const stations = byDate.get(date).slice().sort((a, b) => a.passRate - b.passRate);
+        const rows = stations.map((station, index) => {
+          const rowClass = rankClasses[index] || "";
+          return `
+            <tr class="${rowClass}" data-date="${escapeHtml(date)}" data-station="${escapeHtml(station.station)}">
+              <td class="col-station">${escapeHtml(station.station)}</td>
+              <td class="col-input">${station.input}</td>
+              <td class="col-failed">${station.failed}</td>
+              <td class="col-pass">${station.passRate.toFixed(2)}%</td>
+            </tr>`;
+        }).join("");
+        return `
+          <div class="yield-card">
+            <div class="yield-card-header">
+              <span>${escapeHtml(date)}</span>
+              <span class="count">${stations.length} station${stations.length === 1 ? "" : "s"}</span>
+            </div>
+            <table class="yield-table">
+              <thead><tr><th class="col-station">Station</th><th class="col-input">Input</th><th class="col-failed">Failed</th><th class="col-pass">Pass(%)</th></tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>`;
+      }).join("");
+    }
+
+    function closeStationModal() {
+      stationModal.hidden = true;
+      stationModalBody.innerHTML = "";
+    }
+
+    function renderStationModalTable(records) {
+      if (!records.length) {
+        stationModalBody.innerHTML = '<p class="station-modal-empty">No SNs available for this station and date.</p>';
+        return;
+      }
+      const rows = records.map((record, index) => `
+        <tr class="${record.failed ? "row-failed" : ""}">
+          <td class="col-seq">${index + 1}</td>
+          <td class="col-serial">${escapeHtml(record.serialNumber)}</td>
+          <td class="col-product">${escapeHtml(record.product || "—")}</td>
+          <td class="col-model">${escapeHtml(record.model || "—")}</td>
+          <td class="col-code">${escapeHtml(record.errorCode || "")}</td>
+          <td class="col-desc">${escapeHtml(record.errorDescription || "")}</td>
+        </tr>`).join("");
+      stationModalBody.innerHTML = `
+        <table class="station-modal-table">
+          <thead>
+            <tr>
+              <th class="col-seq">#</th>
+              <th class="col-serial">Serial Number</th>
+              <th class="col-product">Product</th>
+              <th class="col-model">Model</th>
+              <th class="col-code">Code Error</th>
+              <th class="col-desc">Description Error</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>`;
+    }
+
+    async function openStationModal(date, station) {
+      stationModalTitle.textContent = `Station SNs · ${station}`;
+      stationModalSubtitle.textContent = `Fecha: ${date}`;
+      stationModalBody.innerHTML = '<p class="station-modal-empty">Loading…</p>';
+      stationModal.hidden = false;
+      try {
+        const response = await fetch(`/api/station-serials?station=${encodeURIComponent(station)}&date=${encodeURIComponent(date)}`);
+        if (!response.ok) throw new Error("Station serials unavailable.");
+        const { count, failedCount, records } = await response.json();
+        stationModalSubtitle.textContent = `Fecha: ${date}   |   Total: ${count} SN(s)   |   Failed: ${failedCount}`;
+        renderStationModalTable(records);
+      } catch (error) {
+        stationModalBody.innerHTML = '<p class="station-modal-empty">Unable to load station SNs.</p>';
+      }
+    }
+
+    function formatDateTime(value) {
+      if (!value) return "—";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return escapeHtml(value);
+      return date.toLocaleString(undefined, {
+        day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit",
+      });
+    }
+
+    function closePackModal() {
+      packModal.hidden = true;
+      packModalBody.innerHTML = "";
+    }
+
+    function renderStatusModalTable(body, records, columns, emptyLabel) {
+      if (!records.length) {
+        body.innerHTML = `<p class="station-modal-empty">${emptyLabel}</p>`;
+        return;
+      }
+      const rows = records.map((record, index) => `
+        <tr>
+          <td class="col-seq">${index + 1}</td>
+          ${columns.map((col) => `<td class="${col.className}">${col.render(record)}</td>`).join("")}
+        </tr>`).join("");
+      body.innerHTML = `
+        <table class="station-modal-table pack-table">
+          <thead>
+            <tr>
+              <th class="col-seq">#</th>
+              ${columns.map((col) => `<th class="${col.className}">${escapeHtml(col.label)}</th>`).join("")}
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>`;
+    }
+
+    async function loadStatusBadge(apiPath, badge, onCount) {
+      try {
+        const response = await fetch(apiPath);
+        if (!response.ok) throw new Error("Count unavailable.");
+        const { count } = await response.json();
+        badge.textContent = String(count);
+        badge.hidden = !count;
+        if (onCount) onCount(count);
+      } catch (error) {
+        badge.hidden = true;
+        if (onCount) onCount(null);
+      }
+    }
+
+    async function openStatusModal(apiPathOrBuilder, { modal, subtitle, body, columns, emptyLabel, onRecords }) {
+      subtitle.textContent = "Loading…";
+      body.innerHTML = '<p class="station-modal-empty">Loading…</p>';
+      modal.hidden = false;
+      try {
+        const apiPath = typeof apiPathOrBuilder === "function" ? apiPathOrBuilder() : apiPathOrBuilder;
+        const response = await fetch(apiPath);
+        if (!response.ok) throw new Error("Serials unavailable.");
+        const { date, beginDate, endDate, count, records } = await response.json();
+        const dateLabel = beginDate && endDate
+          ? (beginDate === endDate ? beginDate : `${beginDate} → ${endDate}`)
+          : date;
+        subtitle.textContent = `Fecha: ${dateLabel}   |   Total: ${count} SN(s)`;
+        renderStatusModalTable(body, records, columns, emptyLabel);
+        if (onRecords) onRecords(records, dateLabel);
+      } catch (error) {
+        body.innerHTML = '<p class="station-modal-empty">Unable to load SNs.</p>';
+      }
+    }
+
+    const statusModalBaseColumns = [
+      { className: "col-sr", label: "SR", render: (r) => escapeHtml(r.serviceRequestId || "—") },
+      { className: "col-serial", label: "Serial Number", render: (r) => escapeHtml(r.serialNumber) },
+      { className: "col-product", label: "Product", render: (r) => escapeHtml(r.product || "—") },
+      { className: "col-model", label: "Model", render: (r) => escapeHtml(r.model || "—") },
+    ];
+    const packColumns = [
+      ...statusModalBaseColumns,
+      { className: "col-user", label: "Operator", render: (r) => escapeHtml(r.user || "—") },
+      { className: "col-time", label: "Packed At", render: (r) => formatDateTime(r.packedAt) },
+    ];
+    const exchangeColumns = [
+      { className: "col-keyin", label: "Keyin Date", render: (r) => formatDateTime(r.keyinDate) },
+      ...statusModalBaseColumns,
+      { className: "col-disposition", label: "Disposition", render: (r) => escapeHtml(r.disposition || "—") },
+      { className: "col-issue", label: "Issue", render: (r) => escapeHtml(r.issue || "—") },
+      { className: "col-user", label: "User", render: (r) => escapeHtml(r.user || "—") },
+      { className: "col-time", label: "Exchanged At", render: (r) => formatDateTime(r.exchangedAt) },
+    ];
+
+    let latestPackCount = null;
+    let latestExchangeCount = null;
+    let latestExceptionCount = null;
+
+    function updatePerformanceBadge() {
+      if (latestPackCount === null || latestExchangeCount === null || latestExceptionCount === null) return;
+      const denominator = latestPackCount + latestExchangeCount - latestExceptionCount;
+      if (denominator <= 0) {
+        performanceBadge.hidden = true;
+        return;
+      }
+      const percent = (latestPackCount / denominator) * 100;
+      performanceBadge.textContent = `${percent.toFixed(1)}%`;
+      performanceBadge.hidden = false;
+    }
+
+    function loadPackCount() {
+      return loadStatusBadge("/api/pack-serials", packBadge, (count) => {
+        latestPackCount = count;
+        updatePerformanceBadge();
+      });
+    }
+
+    function initPackDateRange() {
+      const today = todayIsoDate();
+      if (!packBeginInput.value) packBeginInput.value = today;
+      if (!packEndInput.value) packEndInput.value = today;
+    }
+
+    function resetPackDateRangeToToday() {
+      const today = todayIsoDate();
+      packBeginInput.value = today;
+      packEndInput.value = today;
+    }
+
+    function buildPackApiPath() {
+      initPackDateRange();
+      const params = new URLSearchParams({ begin: packBeginInput.value, end: packEndInput.value });
+      return `/api/pack-serials?${params.toString()}`;
+    }
+
+    function openPackModal() {
+      return openStatusModal(buildPackApiPath, {
+        modal: packModal, subtitle: packModalSubtitle, body: packModalBody,
+        columns: packColumns, emptyLabel: "No units packed for this date range.",
+      });
+    }
+
+    let exchangeAllRecords = [];
+    let exchangeExportRecords = [];
+    let exchangeExportDate = "";
+
+    function closeExchangeModal() {
+      exchangeModal.hidden = true;
+      exchangeModalBody.innerHTML = "";
+    }
+
+    function loadExchangeCount() {
+      return loadStatusBadge("/api/exchange-serials", exchangeBadge, (count) => {
+        latestExchangeCount = count;
+        updatePerformanceBadge();
+      });
+    }
+
+    function todayIsoDate() {
+      const now = new Date();
+      const month = String(now.getMonth() + 1).padStart(2, "0");
+      const day = String(now.getDate()).padStart(2, "0");
+      return `${now.getFullYear()}-${month}-${day}`;
+    }
+
+    function initExchangeDateRange() {
+      const today = todayIsoDate();
+      if (!exchangeBeginInput.value) exchangeBeginInput.value = today;
+      if (!exchangeEndInput.value) exchangeEndInput.value = today;
+    }
+
+    function resetExchangeDateRangeToToday() {
+      const today = todayIsoDate();
+      exchangeBeginInput.value = today;
+      exchangeEndInput.value = today;
+    }
+
+    function buildExchangeApiPath() {
+      initExchangeDateRange();
+      const params = new URLSearchParams({ begin: exchangeBeginInput.value, end: exchangeEndInput.value });
+      return `/api/exchange-serials?${params.toString()}`;
+    }
+
+    function populateExchangeDispositionOptions(records) {
+      const current = exchangeDispositionFilter.value;
+      const dispositions = Array.from(new Set(records.map((r) => r.disposition).filter(Boolean))).sort();
+      exchangeDispositionFilter.innerHTML = '<option value="">All</option>' +
+        dispositions.map((d) => `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join("");
+      if (dispositions.includes(current)) exchangeDispositionFilter.value = current;
+    }
+
+    function applyExchangeDispositionFilter() {
+      const selected = exchangeDispositionFilter.value;
+      const filtered = selected ? exchangeAllRecords.filter((r) => r.disposition === selected) : exchangeAllRecords;
+      exchangeExportRecords = filtered;
+      renderStatusModalTable(exchangeModalBody, filtered, exchangeColumns, "No units exchanged for this filter.");
+    }
+
+    function openExchangeModal() {
+      return openStatusModal(buildExchangeApiPath, {
+        modal: exchangeModal, subtitle: exchangeModalSubtitle, body: exchangeModalBody,
+        columns: exchangeColumns, emptyLabel: "No units exchanged for this date range.",
+        onRecords: (records, dateLabel) => {
+          exchangeAllRecords = records;
+          exchangeExportDate = dateLabel;
+          populateExchangeDispositionOptions(records);
+          applyExchangeDispositionFilter();
+        },
+      });
+    }
+
+    function csvEscape(value) {
+      const text = String(value ?? "");
+      return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    }
+
+    function exportExchangesToExcel() {
+      if (!exchangeExportRecords.length) return;
+      const headers = ["Keyin Date", "SR", "Serial Number", "Product", "Model", "Disposition", "Issue", "User", "Exchanged At"];
+      const rows = exchangeExportRecords.map((record) => [
+        formatDateTime(record.keyinDate),
+        record.serviceRequestId || "",
+        record.serialNumber || "",
+        record.product || "",
+        record.model || "",
+        record.disposition || "",
+        record.issue || "",
+        record.user || "",
+        formatDateTime(record.exchangedAt),
+      ]);
+      const csv = [headers, ...rows].map((row) => row.map(csvEscape).join(",")).join("\r\n");
+      const blob = new Blob(["\ufeff" + csv], { type: "application/vnd.ms-excel;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      const fileDateLabel = (exchangeExportDate || todayIsoDate()).replace(/[^0-9a-z]+/gi, "_");
+      link.download = `Exchanges_${fileDateLabel}.xls`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    const exceptionColumns = exchangeColumns;
+    let exceptionExportRecords = [];
+    let exceptionExportDate = "";
+
+    function closeExceptionModal() {
+      exceptionModal.hidden = true;
+      exceptionModalBody.innerHTML = "";
+    }
+
+    function loadExceptionCount() {
+      return loadStatusBadge("/api/exception-serials", exceptionBadge, (count) => {
+        latestExceptionCount = count;
+        updatePerformanceBadge();
+      });
+    }
+
+    function initExceptionDateRange() {
+      const today = todayIsoDate();
+      if (!exceptionBeginInput.value) exceptionBeginInput.value = today;
+      if (!exceptionEndInput.value) exceptionEndInput.value = today;
+    }
+
+    function resetExceptionDateRangeToToday() {
+      const today = todayIsoDate();
+      exceptionBeginInput.value = today;
+      exceptionEndInput.value = today;
+    }
+
+    function buildExceptionApiPath() {
+      initExceptionDateRange();
+      const params = new URLSearchParams({ begin: exceptionBeginInput.value, end: exceptionEndInput.value });
+      return `/api/exception-serials?${params.toString()}`;
+    }
+
+    function openExceptionModal() {
+      return openStatusModal(buildExceptionApiPath, {
+        modal: exceptionModal, subtitle: exceptionModalSubtitle, body: exceptionModalBody,
+        columns: exceptionColumns, emptyLabel: "No exception units for this date range.",
+        onRecords: (records, dateLabel) => { exceptionExportRecords = records; exceptionExportDate = dateLabel; },
+      });
+    }
+
+    function exportExceptionToExcel() {
+      if (!exceptionExportRecords.length) return;
+      const headers = ["Keyin Date", "SR", "Serial Number", "Product", "Model", "Disposition", "Issue", "User", "Exchanged At"];
+      const rows = exceptionExportRecords.map((record) => [
+        formatDateTime(record.keyinDate),
+        record.serviceRequestId || "",
+        record.serialNumber || "",
+        record.product || "",
+        record.model || "",
+        record.disposition || "",
+        record.issue || "",
+        record.user || "",
+        formatDateTime(record.exchangedAt),
+      ]);
+      const csv = [headers, ...rows].map((row) => row.map(csvEscape).join(",")).join("\r\n");
+      const blob = new Blob(["\ufeff" + csv], { type: "application/vnd.ms-excel;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      const fileDateLabel = (exceptionExportDate || todayIsoDate()).replace(/[^0-9a-z]+/gi, "_");
+      link.download = `Exception_${fileDateLabel}.xls`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    async function loadStationYield(forceRefresh = false) {
+      try {
+        refreshYieldButton.disabled = true;
+        yieldGrid.innerHTML = '<p class="yield-empty">Loading station yield...</p>';
+        const begin = yieldBeginInput.value;
+        const end = yieldEndInput.value;
+        const params = new URLSearchParams();
+        if (forceRefresh) params.set("refresh", "1");
+        if (begin) params.set("begin", begin);
+        if (end) params.set("end", end);
+        const response = await fetch(`/api/station-yield?${params.toString()}`);
+        if (!response.ok) throw new Error("The station yield service is unavailable.");
+        const { records } = await response.json();
+        yieldRecords = records;
+        yieldNextRefreshAt = Date.now() + refreshIntervalMs;
+        updateYieldSyncTime();
+        renderYieldGrid();
+      } catch (error) {
+        yieldGrid.innerHTML = '<p class="yield-empty">Unable to load station yield.</p>';
+      } finally {
+        refreshYieldButton.disabled = false;
+      }
+    }
+
+    function initYieldDateRange() {
+      const today = new Date();
+      const past = new Date();
+      past.setDate(today.getDate() - yieldLookbackDays);
+      const toIso = (date) => date.toISOString().slice(0, 10);
+      yieldBeginInput.value = toIso(past);
+      yieldEndInput.value = toIso(today);
+    }
+
+    function switchDashboardMode(mode) {
+      dashboardMode = mode;
+      const isYield = mode === "yield";
+      modeWipButton.classList.toggle("active", !isYield);
+      modeWipButton.setAttribute("aria-selected", String(!isYield));
+      modeYieldButton.classList.toggle("active", isYield);
+      modeYieldButton.setAttribute("aria-selected", String(isYield));
+      wipControls.hidden = isYield;
+      wipView.hidden = isYield;
+      wipFooter.hidden = isYield;
+      yieldView.hidden = !isYield;
+      if (isYield && !yieldRecords.length) loadStationYield();
+    }
+
+    previousPageButton.addEventListener("click", () => {
+      if (currentPage > 0) {
+        currentPage -= 1;
+        renderPage();
+      }
+    });
+    nextPageButton.addEventListener("click", () => {
+      if ((currentPage + 1) * pageSize < filteredSerialNumbers.length) {
+        currentPage += 1;
+        renderPage();
+      }
+    });
+
+    searchInput.addEventListener("input", applyFilters);
+    refreshButton.addEventListener("click", () => loadActiveSerialNumbers(true));
+
+    setInterval(updateSyncTime, 1000);
+    setInterval(() => loadActiveSerialNumbers(), refreshIntervalMs);
+    setInterval(updateYieldSyncTime, 1000);
+    setInterval(() => { if (dashboardMode === "yield") loadStationYield(); }, refreshIntervalMs);
+    setInterval(loadPackCount, refreshIntervalMs);
+    setInterval(loadExchangeCount, refreshIntervalMs);
+    setInterval(loadExceptionCount, refreshIntervalMs);
+
+    modeWipButton.addEventListener("click", () => switchDashboardMode("wip"));
+    modeYieldButton.addEventListener("click", () => switchDashboardMode("yield"));
+    refreshYieldButton.addEventListener("click", () => loadStationYield(true));
+    yieldApplyButton.addEventListener("click", () => loadStationYield(true));
+
+    yieldGrid.addEventListener("click", (event) => {
+      const row = event.target.closest("tr[data-station]");
+      if (!row) return;
+      openStationModal(row.dataset.date, row.dataset.station);
+    });
+    stationModalClose.addEventListener("click", closeStationModal);
+    stationModal.addEventListener("click", (event) => {
+      if (event.target === stationModal) closeStationModal();
+    });
+    navPackButton.addEventListener("click", () => {
+      resetPackDateRangeToToday();
+      openPackModal();
+    });
+    packModalClose.addEventListener("click", closePackModal);
+    packApplyButton.addEventListener("click", openPackModal);
+    packModal.addEventListener("click", (event) => {
+      if (event.target === packModal) closePackModal();
+    });
+    navExchangesButton.addEventListener("click", () => {
+      resetExchangeDateRangeToToday();
+      openExchangeModal();
+    });
+    exchangeModalClose.addEventListener("click", closeExchangeModal);
+    exchangeModalExport.addEventListener("click", exportExchangesToExcel);
+    exchangeApplyButton.addEventListener("click", openExchangeModal);
+    exchangeDispositionFilter.addEventListener("change", applyExchangeDispositionFilter);
+    exchangeModal.addEventListener("click", (event) => {
+      if (event.target === exchangeModal) closeExchangeModal();
+    });
+    navExceptionButton.addEventListener("click", () => {
+      resetExceptionDateRangeToToday();
+      openExceptionModal();
+    });
+    exceptionModalClose.addEventListener("click", closeExceptionModal);
+    exceptionModalExport.addEventListener("click", exportExceptionToExcel);
+    exceptionApplyButton.addEventListener("click", openExceptionModal);
+    exceptionModal.addEventListener("click", (event) => {
+      if (event.target === exceptionModal) closeExceptionModal();
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !stationModal.hidden) closeStationModal();
+      if (event.key === "Escape" && !packModal.hidden) closePackModal();
+      if (event.key === "Escape" && !exchangeModal.hidden) closeExchangeModal();
+      if (event.key === "Escape" && !exceptionModal.hidden) closeExceptionModal();
+    });
+
+    initYieldDateRange();
+    initPackDateRange();
+    initExchangeDateRange();
+    initExceptionDateRange();
+    loadActiveSerialNumbers();
+    loadPackCount();
+    loadExchangeCount();
+    loadExceptionCount();
+  </script>
+</body>
+</html>
